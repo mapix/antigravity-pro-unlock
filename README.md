@@ -1,0 +1,101 @@
+# Antigravity Pro Unlock
+
+用标准 Agent Skill 启用 Antigravity 已随应用分发的本地能力：**Swarm、Boost、Teamwork**。安装使用官方 [`skills` CLI](https://github.com/vercel-labs/skills)，支持 Codex、Claude Code、Cursor、OpenCode 等客户端。
+
+版本：**1.2.0**。项目由 `enable-antigravity-swarm` 更名并独立维护。
+
+## 安装
+
+先列出技能：
+
+```sh
+npx skills add mapix/antigravity-pro-unlock --list
+```
+
+交互选择客户端和安装范围：
+
+```sh
+npx skills add mapix/antigravity-pro-unlock --skill antigravity-pro-unlock
+```
+
+全局安装到常用外部客户端：
+
+```sh
+npx skills add mapix/antigravity-pro-unlock --skill antigravity-pro-unlock -g -a codex -a claude-code -a cursor -a opencode -y
+```
+
+单个客户端，例如 Codex：
+
+```sh
+npx skills add mapix/antigravity-pro-unlock --skill antigravity-pro-unlock -g -a codex -y
+```
+
+默认使用 CLI 的标准链接安装；需要文件副本时加 `--copy`。客户端列表和目录由官方 CLI 维护，见[官方客户端文档](https://github.com/vercel-labs/skills/blob/main/docs/agents.md)。CLI 当前要求 Node.js **22.20.0+**。
+
+本地仓库也可以直接安装：
+
+```sh
+npx skills add ./antigravity-pro-unlock --skill antigravity-pro-unlock -g -a codex -a claude-code -a cursor -a opencode -y
+```
+
+以上命令安装技能。应用补丁由使用该技能的 agent 按检查、备份、安装、验证流程执行。
+
+## 使用
+
+在其他 harness 中输入：
+
+> 使用 antigravity-pro-unlock 技能检查我的 Antigravity，并启用 Swarm、Boost 和 Teamwork。保留现有会话和 gateway 配置。
+
+**从 Antigravity 之外执行补丁。** 完整退出目标应用会终止它自己的 agent；脚本会拒绝从 Antigravity 进程或 agent 环境执行修改。
+
+手动运行时，在仓库根目录执行：
+
+```sh
+python3 skills/antigravity-pro-unlock/scripts/antigravity_pro_unlock.py --version
+python3 skills/antigravity-pro-unlock/scripts/antigravity_pro_unlock.py inspect --features swarm,boost,teamwork
+python3 skills/antigravity-pro-unlock/scripts/antigravity_pro_unlock.py prepare --features swarm,boost,teamwork
+# 完整退出 Antigravity 后，使用 prepare 返回的计划路径：
+python3 skills/antigravity-pro-unlock/scripts/antigravity_pro_unlock.py apply --plan /returned/plan.json --restart
+python3 skills/antigravity-pro-unlock/scripts/antigravity_pro_unlock.py verify --plan /returned/plan.json
+```
+
+若基于旧补丁增加能力，`prepare` 还需传入 `--base-plan /previous/verified/plan.json`。完整流程见 [SKILL.md](skills/antigravity-pro-unlock/SKILL.md)。
+
+## 支持范围
+
+| 能力 | 已验证 Antigravity 版本 | 验证范围 |
+| --- | --- | --- |
+| Swarm | 2.31.0、2.31.2 | 命令和原生 Board / Members / Graph |
+| Boost | 2.31.2 | 原生命令入口 |
+| Teamwork | 2.31.2 | 原生命令入口 |
+
+补丁运行于 **macOS Apple Silicon**，需要 **Python 3.9+** 和 macOS 自带的 `codesign`、`ditto`、`ps`、`open`。跨客户端安装遵循 [Agent Skills 标准](https://agentskills.io/specification)；应用兼容性按上表限制。
+
+“Pro Unlock” 是本项目对本地功能补丁的命名，不提供订阅或额度。账号认证、gateway、模型路由及管理员控制保留。Boost、Teamwork 的完整任务效果尚未进行基准测试。
+
+## 备份与升级
+
+- 修改前保存完整应用备份和配置备份，检查原应用及 staging 指纹。
+- 新计划位于 `~/.local/share/antigravity-pro-unlock/`；旧 `~/.local/share/antigravity-swarm-patch/` 计划可继续通过绝对路径使用。
+- 原会话和配置目录保持不变。升级后先检查当前版本，再为支持的版本准备新补丁；不要复用旧偏移或直接应用旧计划。
+- 修改原生二进制会使厂商签名失效；脚本对该应用进行本地签名。失败时使用计划中的源应用回滚。机制见 [mechanics.md](skills/antigravity-pro-unlock/references/mechanics.md)。
+
+更新或卸载技能使用官方 CLI：
+
+```sh
+npx skills update antigravity-pro-unlock -g
+npx skills remove antigravity-pro-unlock -g -y
+```
+
+卸载技能不会回滚已安装的应用补丁。应用回滚需按计划执行 `restore`。
+
+## 开发与打包
+
+```sh
+npm ci --ignore-scripts
+npm test
+npm run test:install
+npm run package
+```
+
+测试使用一次性应用 fixture 和项目安装目录。打包产物及 SHA-256 位于 `dist/`；包含技能及许可证，不包含应用、会话、配置、凭据或本机备份。

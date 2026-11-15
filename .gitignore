@@ -1,0 +1,11 @@
+node_modules/
+dist/
+__pycache__/
+*.py[cod]
+.DS_Store
+.agents/
+.claude/
+.codex/
+.cursor/
+.opencode/
+skills-lock.json
