@@ -63,3 +63,13 @@ The copied viewer can remain after an application upgrade. Compare its recorded 
 Restore the source app from its verified plan. The application rollback retains existing conversation data and gateway configuration. Refuse to overwrite a newer vendor version with an older backup. Never delete unrelated user sidecars or projects to make the UI appear.
 
 After successful UI acceptance, obsolete app-version backups can be removed when requested. Retain the newest verified original application, its plan, and the recorded original/staged native hashes. Staging and displaced copies are redundant after a verified install; the recorded hash supports damaged-Info.plist recovery without retaining another full app copy.
+
+## Orchestrator and native trajectory pruning
+
+On inspected 2.31.2, `plan-execute-config` is a structured config with `execution_model`. The cohort's `models` map resolves each model enum to one `model_profiles` feature map. Assign an owned profile copied from the existing profile and set its execution model; setting an unused profile alone has no effect.
+
+Hydrogen must have the plan/execute profile too, to expose the `enter_plan_mode` handback tool. The verified gateway pair is Carbon M349 → Hydrogen M340 → Carbon M349. The default prefers Carbon because its independent profile fits the verified span; cloning Argon M418's larger shared profile may exceed capacity.
+
+Gateway `models.list` permits labels, token limits and capability metadata, but no separate underlying-model alias. The local adaptation relabels the existing Carbon row while preserving its modelId. It does not register a duplicate synthetic API model.
+
+Completed deeply nested trajectory databases were observed being pruned at app startup, even while summary records remained. Snapshot payloads before quitting. Checkpoint only owned database copies, record hashes, then restore missing files after startup without overwriting newer live data. Initial pre-snapshot losses cannot be recovered merely by restoring the app binary.

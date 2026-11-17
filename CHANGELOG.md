@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.3.0 — 2026-11-17
+
+- Add the `pro` / `all` preset for the detected release's inspected capabilities.
+- Add gateway Orchestrator model profiles and a Carbon picker label; preserve real model IDs and routing.
+- Register Hydrogen plan-mode tools so actual Carbon → Hydrogen → Carbon handoffs work.
+- Verify real isolated file creation, assertions and planner review on 2.31.2.
+- Preserve existing profile values and refuse insufficient native string capacity.
+- Snapshot conversation databases before installation and recover verified missing files after vendor pruning.
+- Ignore language-server multicall commands during primary RPC runtime discovery.
+
 ## 1.2.0 — 2026-11-16
 
 - Rename the skill to `antigravity-pro-unlock` and establish this standalone repository.

@@ -8,6 +8,7 @@ from pathlib import Path
 import plistlib
 import re
 import shutil
+import sqlite3
 import struct
 import subprocess
 import sys
@@ -19,16 +20,20 @@ from urllib.parse import urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 SKILL_NAME = "antigravity-pro-unlock"
-SKILL_VERSION = "1.2.0"
+SKILL_VERSION = "1.3.0"
 SUPPORTED = {"2.31.0", "2.31.2"}
 FEATURE_FLAGS = {
     "swarm": ("enable-native-swarm", "enable-plugins", "enable-customization-kind-plugin"),
     "boost": ("enable-owl-slash-command",),
     "teamwork": ("enable-teamwork-subagent",),
+    "orchestrator": (),
 }
-FEATURE_VERSIONS = {"swarm": {"2.31.0", "2.31.2"}, "boost": {"2.31.2"}, "teamwork": {"2.31.2"}}
+FEATURE_VERSIONS = {"swarm": {"2.31.0", "2.31.2"}, "boost": {"2.31.2"}, "teamwork": {"2.31.2"}, "orchestrator": {"2.31.2"}}
 SELECTED_FEATURES = ("swarm",)
 FLAGS = FEATURE_FLAGS["swarm"]
+ORCHESTRATOR = None
+ORCHESTRATOR_KEY = "plan-execute-config"
+ORCHESTRATOR_PROFILE_PREFIX = "antigravity-pro-unlock/orchestrator/"
 DEFAULT_APP = Path("/Applications/Antigravity.app")
 DEFAULT_ROOT = Path.home() / ".local/share/antigravity-pro-unlock"
 MAGICS = {b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe",
@@ -130,7 +135,7 @@ def require_closed(app):
 def runtime(app):
     prefix = str(binary_path(app))
     matches = [(pid, cmd) for pid, (_, cmd) in processes().items()
-               if cmd.startswith(prefix)]
+               if cmd.startswith(prefix) and re.search(r"--csrf_token(?:=|\s+)", cmd)]
     if len(matches) != 1:
         raise PatchError("Expected exactly one running language server for this app")
     pid, cmd = matches[0]
@@ -197,7 +202,162 @@ def live_state(app):
             "swarm_panels": [{"id": x.get("sidecarId"), "status": x.get("status"),
                               "error": x.get("lastError")} for x in ui]}
 
-def defaults_contract(app, base_plan=None):
+def model_catalog(app):
+    rt = runtime(app)
+    auth = rpc(rt, "GetAuthStatus").get("authResult", {})
+    if not auth.get("hasValidAuth"):
+        raise PatchError("Valid existing authentication is required to resolve models")
+    data = rpc(rt, "GetCascadeModelConfigData")
+    rows = []
+    for x in data.get("clientModelConfigs", []):
+        enum = x.get("modelOrAlias", {}).get("model")
+        if x.get("modelId") and enum and not x.get("disabled"):
+            rows.append({"model_id": x["modelId"], "enum": enum, "label": x.get("label", x["modelId"])})
+    return auth.get("authMode"), rows
+
+def resolve_orchestrator(app, planners="auto", execution="gemini-4-hydrogen"):
+    if identity(app)["version"] not in FEATURE_VERSIONS["orchestrator"]:
+        raise PatchError("Orchestrator is inspected only on 2.31.2")
+    mode, rows = model_catalog(app)
+    if mode != "AUTH_MODE_ENTERPRISE_GATEWAY":
+        raise PatchError("This Orchestrator patch is validated for gateway mode; inspect native account support first")
+    by_id = {x["model_id"]: x for x in rows}
+    requested = next(([x] for x in ("gemini-4-carbon", "gemini-4-argon") if x in by_id), []) if planners == "auto" else list(dict.fromkeys(x.strip() for x in planners.split(",") if x.strip()))
+    if not requested or execution not in by_id:
+        raise PatchError("Orchestrator needs an available planner and execution model in the existing gateway catalog")
+    if any(x not in by_id for x in requested):
+        raise PatchError("Requested planner is absent or disabled in the gateway catalog")
+    if execution in requested:
+        raise PatchError("Use different planning and execution models")
+    expected = {"gemini-4-argon": "MODEL_PLACEHOLDER_M418", "gemini-4-carbon": "MODEL_PLACEHOLDER_M349", "gemini-4-hydrogen": "MODEL_PLACEHOLDER_M340"}
+    if any(expected.get(x) != by_id[x]["enum"] for x in requested + [execution]):
+        raise PatchError("Uninspected model mapping; inspect/adapt rather than guessing enum slots")
+    config = {"execution_model": by_id[execution]["enum"]}
+    plans = []
+    for model_id in requested:
+        row = dict(by_id[model_id])
+        row["profile"] = ORCHESTRATOR_PROFILE_PREFIX + row["enum"]
+        family = "Argon" if model_id == "gemini-4-argon" else "Carbon"
+        row["orchestrator_label"] = f"Orchestrator ({family}) (Gateway)"
+        plans.append(row)
+    return {"feature_key": ORCHESTRATOR_KEY, "value": config,
+            "execution": dict(by_id[execution]), "planners": plans,
+            "execution_profile": ORCHESTRATOR_PROFILE_PREFIX + "executor/" + by_id[execution]["enum"],
+            "scope": "model_profiles", "gateway_models": rows}
+
+def orchestrator_defaults(obj, requested, write=False):
+    profiles, models = obj.get("model_profiles"), obj.get("models")
+    if not isinstance(profiles, dict) or not isinstance(models, dict):
+        raise PatchError("Unsupported per-model defaults layout")
+    enabled = True
+    executor = dict(requested["execution"])
+    executor["profile"] = requested.get("execution_profile", ORCHESTRATOR_PROFILE_PREFIX + "executor/" + executor["enum"])
+    for row in requested["planners"] + [executor]:
+        profile = row["profile"]
+        current = models.get(row["enum"])
+        if current is not None and not isinstance(current, str):
+            raise PatchError("Model-to-profile mapping must be a string")
+        existing = profiles.get(current, {}) if current else {}
+        if not isinstance(existing, dict):
+            raise PatchError("Model profile is not a feature map")
+        owned = profiles.get(profile, {})
+        if not isinstance(owned, dict):
+            raise PatchError("Owned Orchestrator profile is not a feature map")
+        raw = owned.get(ORCHESTRATOR_KEY)
+        try:
+            value = json.loads(raw) if isinstance(raw, str) else raw
+        except ValueError:
+            value = None
+        if current != profile or value != requested["value"]:
+            enabled = False
+        if write:
+            profiles[profile] = dict(existing)
+            profiles[profile][ORCHESTRATOR_KEY] = json.dumps(requested["value"], separators=(",", ":"))
+            models[row["enum"]] = profile
+    return enabled
+
+def snapshot_conversation_data(data_dir, destination):
+    source = Path(data_dir) / "conversations"
+    if not source.is_dir():
+        return None
+    target = Path(destination) / "conversations"
+    target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if sys.platform == "darwin":
+        run(["cp", "-cR", source, target])
+    else:
+        shutil.copytree(source, target)
+    # Checkpoint only the owned copies so each protected .db is self-contained.
+    records = {}
+    for file in sorted(target.glob("*.db")):
+        if file.is_symlink():
+            raise PatchError("Conversation snapshot contains a linked database")
+        db = sqlite3.connect(str(file))
+        try:
+            db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        finally:
+            db.close()
+        records[file.name] = sha(file)
+    return {"directory": str(target), "files": records,
+            "strategy": "owned-copy-checkpoint"}
+
+def restore_pruned_conversation_files(plan):
+    snapshot = plan.get("conversation_snapshot")
+    if not snapshot:
+        return []
+    directory = Path(snapshot["directory"]).resolve()
+    plan_root = Path(plan["original_app"]).resolve().parent.parent
+    if plan_root not in directory.parents:
+        raise PatchError("Conversation snapshot escapes its verified plan")
+    destination = Path(plan["data_dir"]) / "conversations"
+    restored = []
+    for name, expected in snapshot["files"].items():
+        if Path(name).name != name or not re.fullmatch(r"[0-9a-fA-F-]{36}\.db", name):
+            raise PatchError("Invalid conversation snapshot filename")
+        target = destination / name
+        if target.exists():
+            continue
+        source = directory / name
+        if not source.is_file() or sha(source) != expected:
+            raise PatchError("Protected conversation snapshot changed")
+        destination.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+        restored.append(name[:-3])
+    return restored
+
+def model_label_patches(requested, path):
+    config = json.loads(Path(path).read_text())
+    rows = config.get("models", {}).get("list", [])
+    result = []
+    for planner in requested["planners"]:
+        matches = [x for x in rows if x.get("modelId") == planner["model_id"]]
+        if len(matches) != 1:
+            raise PatchError("Orchestrator UI labels need one explicit gateway models.list entry per planner")
+        result.append({"model_id": planner["model_id"], "before": matches[0].get("displayName"),
+                       "after": planner["orchestrator_label"]})
+    return result
+
+def apply_model_labels(plan, restore=False):
+    changes = plan.get("model_label_patches", [])
+    if not changes:
+        return
+    path = Path(plan["config_dir"]) / "config.json"
+    config = json.loads(path.read_text())
+    rows = config.get("models", {}).get("list", [])
+    for change in changes:
+        matches = [x for x in rows if x.get("modelId") == change["model_id"]]
+        if len(matches) != 1:
+            raise PatchError("Gateway model list changed; do not overwrite unrelated configuration")
+        row = matches[0]
+        old, new = (change["after"], change["before"]) if restore else (change["before"], change["after"])
+        if row.get("displayName") not in (old, new):
+            raise PatchError("Gateway display name changed independently; preserve it and inspect")
+        if new is None:
+            row.pop("displayName", None)
+        else:
+            row["displayName"] = new
+    private_json(path, config)
+
+def defaults_contract(app, base_plan=None, orchestrator=None, inspect_only=False):
     data = binary_path(app).read_bytes()
     if data[:4] != b"\xcf\xfa\xed\xfe":
         raise PatchError("Only the verified thin arm64 Mach-O layout is supported")
@@ -208,6 +368,9 @@ def defaults_contract(app, base_plan=None):
             raise PatchError(f"Missing shipped feature contract: {flag}")
     if b"assets/shared/plugins/swarm/" not in data:
         raise PatchError("Missing shipped native Swarm viewer assets")
+    requested = orchestrator if orchestrator is not None else ORCHESTRATOR
+    if requested and any(k.encode() not in data for k in (ORCHESTRATOR_KEY, "enter_plan_mode", "exit_plan_mode")):
+        raise PatchError("Missing native plan/execute contract")
     found = []
     dec = json.JSONDecoder()
     for m in re.finditer(rb'\{\s*"base"\s*:', data):
@@ -229,9 +392,12 @@ def defaults_contract(app, base_plan=None):
     patched = json.loads(json.dumps(obj))
     for key in FLAGS:
         patched["base"][key] = True
+    orchestrator_before = orchestrator_defaults(obj, requested) if requested else None
+    if requested:
+        orchestrator_defaults(patched, requested, write=True)
     new = json.dumps(patched, separators=(",", ":"), ensure_ascii=False).encode()
-    already = all(obj["base"].get(key) is True for key in FLAGS)
-    if not already and len(new) > len(original):
+    already = all(obj["base"].get(key) is True for key in FLAGS) and (not requested or orchestrator_before)
+    if not inspect_only and not already and len(new) > len(original):
         if not base_plan:
             raise PatchError("Compact prior patch needs --base-plan for verified capacity")
         _, base = load_plan(base_plan)
@@ -248,10 +414,12 @@ def defaults_contract(app, base_plan=None):
             raise PatchError("Verified prior string tail is not whitespace")
         original = whole
         if len(new) > len(original):
-            raise PatchError("Requested features exceed the verified string capacity")
+            raise PatchError(f"Requested features need {len(new)} bytes but the verified string span has {len(original)}; preserve existing profiles and inspect/adapt")
     return {"offset": offset, "length": len(original),
             "original": original, "patched": new.ljust(len(original), b" "),
             "flags_before": {k: obj["base"].get(k) for k in FLAGS},
+            "orchestrator_before": orchestrator_before,
+            "replacement_bytes": len(new),
             "already_patched": already}
 
 def sign_debug_app(app):
@@ -290,7 +458,7 @@ def sign_debug_app(app):
 
 def inspect(app):
     info = identity(app)
-    contract = defaults_contract(app)
+    contract = defaults_contract(app, inspect_only=True)
     live = None
     try:
         live = live_state(app)
@@ -300,6 +468,7 @@ def inspect(app):
         pass
     return {"app": str(app), "identity": info, "verified_version": info["version"] in SUPPORTED,
             "flags_before": contract["flags_before"],
+            "orchestrator": ORCHESTRATOR, "orchestrator_before": contract["orchestrator_before"],
             "already_patched": contract["already_patched"], "live": live}
 
 def prepare(app, backup_root, base_plan=None):
@@ -314,10 +483,11 @@ def prepare(app, backup_root, base_plan=None):
         baseline.pop("runtime", None)
     except PatchError:
         pass
-    if contract["already_patched"]:
+    labels = model_label_patches(ORCHESTRATOR, Path.home() / ".gemini/config/config.json") if ORCHESTRATOR else []
+    if contract["already_patched"] and all(x["before"] == x["after"] for x in labels):
         return {"action": "noop", "reason": "All required defaults already enabled",
                 "next": "Run verify, then panel if necessary"}
-    if baseline and all(k in baseline["enabled_flags"] for k in FLAGS) and ("swarm" not in SELECTED_FEATURES or baseline["swarm_panels"]):
+    if not ORCHESTRATOR and baseline and all(k in baseline["enabled_flags"] for k in FLAGS) and ("swarm" not in SELECTED_FEATURES or baseline["swarm_panels"]):
         return {"action": "noop", "reason": "Requested native features are already available"}
     run(["codesign", "--verify", "--deep", "--strict", app])
     before = fingerprint(app)
@@ -340,6 +510,8 @@ def prepare(app, backup_root, base_plan=None):
             q.parent.mkdir(exist_ok=True, mode=0o700)
             shutil.copy2(p, q)
             q.chmod(0o600)
+    data_dir = Path.home() / ".gemini/antigravity"
+    conversation_snapshot = snapshot_conversation_data(data_dir, folder / "data-original")
     run(["ditto", original, staged])
     p = binary_path(staged)
     with p.open("r+b") as f:
@@ -367,7 +539,10 @@ def prepare(app, backup_root, base_plan=None):
             "staged_native_sha256": sha(binary_path(staged)),
             "native_span": {"offset": contract["offset"],
             "length": contract["length"]}, "baseline": baseline,
-            "config_dir": str(config_dir), "data_dir": str(Path.home() / ".gemini/antigravity"),
+            "config_dir": str(config_dir), "data_dir": str(data_dir),
+            "conversation_snapshot": conversation_snapshot,
+            "orchestrator": ORCHESTRATOR,
+            "model_label_patches": labels,
             "state": "prepared"}
     plan_path = folder / "plan.json"
     private_json(plan_path, plan)
@@ -438,8 +613,12 @@ def apply_plan(path, restart):
     install_candidate(app, stage, archive)
     plan["state"] = "applied"
     private_json(path, plan)
+    apply_model_labels(plan)
     if restart:
         launch_and_wait(app)
+        restored_files = restore_pruned_conversation_files(plan)
+        plan["native_pruning_restored_files"] = restored_files
+        private_json(path, plan)
     return {"action": "applied", "app": str(app), "plan": str(path),
             "backup": plan["original_app"], "next": "verify; then panel if absent"}
 
@@ -457,8 +636,22 @@ def verify(app, plan_path=None):
     if missing:
         raise PatchError("Requested local features are not active: " + ", ".join(missing))
     before_ids = []
+    orchestrator = None
     if plan_path:
         _, plan = load_plan(plan_path)
+        orchestrator = plan.get("orchestrator")
+        if orchestrator:
+            if not defaults_contract(app, orchestrator=orchestrator)["orchestrator_before"]:
+                raise PatchError("Orchestrator per-model defaults are not active")
+            _, catalog = model_catalog(app)
+            by_id = {x["model_id"]: x for x in catalog}
+            for expected in orchestrator["planners"] + [orchestrator["execution"]]:
+                actual = by_id.get(expected["model_id"])
+                if not actual or actual["enum"] != expected["enum"]:
+                    raise PatchError("Orchestrator model availability/mapping changed")
+            for expected in orchestrator["planners"]:
+                if by_id[expected["model_id"]]["label"] != expected["orchestrator_label"]:
+                    raise PatchError("Orchestrator UI model label is not active")
         baseline = plan.get("baseline") or {}
         if plan.get("baseline") is not None and baseline.get("conversation_id_source") != "conversation_files":
             raise PatchError("Legacy plan used resident trajectory IDs; prepare a fresh plan for durable data verification")
@@ -471,6 +664,10 @@ def verify(app, plan_path=None):
               "baseline_conversations_preserved": bool(before_ids),
               "config_namespace": rt["config_dir"], "data_namespace": rt["data_dir"],
               "swarm_panels": state["swarm_panels"], "ui_observation_required": True}
+    if orchestrator:
+        result["orchestrator"] = {"planners": [x["model_id"] for x in orchestrator["planners"]],
+                                  "execution": orchestrator["execution"]["model_id"],
+                                  "defaults_verified": True, "live_handoff_observation_required": True}
     return result
 
 def restore(path, restart):
@@ -500,15 +697,19 @@ def restore(path, restart):
             if current["version"] != plan["identity"]["version"]:
                 raise PatchError("Refusing to restore an older backup over another vendor version")
         if fingerprint(app) == plan["original_fingerprint"]:
+            apply_model_labels(plan, restore=True)
             if restart:
-                run(["open", "-n", app])
+                launch_and_wait(app)
+            restore_pruned_conversation_files(plan)
             return {"action": "noop", "reason": "Verified clean app already present"}
     archive = path.parent / "restored-from" / (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + ".app")
     install_candidate(app, original, archive)
+    apply_model_labels(plan, restore=True)
     plan["state"] = "restored"
     private_json(path, plan)
     if restart:
-        run(["open", "-n", app])
+        launch_and_wait(app)
+    restore_pruned_conversation_files(plan)
     return {"action": "restored", "app": str(app), "data_and_gateway_config": "retained"}
 
 def panel(app, backup_root=DEFAULT_ROOT):
@@ -649,18 +850,36 @@ def main():
     parser.add_argument("--backup-root", type=Path, default=DEFAULT_ROOT)
     parser.add_argument("--plan", type=Path)
     parser.add_argument("--restart", action="store_true")
-    parser.add_argument("--features", default="swarm", help="comma-separated swarm,boost,teamwork; default swarm only")
+    parser.add_argument("--features", default="swarm", help="swarm,boost,teamwork,orchestrator; pro/all selects verified features for the app release")
     parser.add_argument("--base-plan", type=Path, help="verified prior plan when extending compact patched defaults")
+    parser.add_argument("--planner-models", default="auto", help="Orchestrator planners: auto, or comma-separated gateway model IDs")
+    parser.add_argument("--execution-model", default="gemini-4-hydrogen", help="Existing gateway execution model ID")
     args = parser.parse_args()
     app = args.app.expanduser().absolute()
-    global FLAGS, SELECTED_FEATURES
+    global FLAGS, SELECTED_FEATURES, ORCHESTRATOR
     SELECTED_FEATURES = tuple(dict.fromkeys(x.strip() for x in args.features.split(",") if x.strip()))
+    preset = SELECTED_FEATURES in (("pro",), ("all",))
+    if preset:
+        SELECTED_FEATURES = tuple(FEATURE_FLAGS)
     if not SELECTED_FEATURES or any(f not in FEATURE_FLAGS for f in SELECTED_FEATURES):
-        parser.error("features must be swarm,boost,teamwork")
+        parser.error("features must be swarm,boost,teamwork,orchestrator")
     FLAGS = tuple(dict.fromkeys(k for f in SELECTED_FEATURES for k in FEATURE_FLAGS[f]))
     try:
         if sys.platform != "darwin":
             raise PatchError("This implementation supports macOS only")
+        if preset and args.action in ("inspect", "prepare"):
+            version = identity(app)["version"]
+            SELECTED_FEATURES = tuple(f for f in FEATURE_FLAGS if version in FEATURE_VERSIONS[f])
+            if not SELECTED_FEATURES:
+                raise PatchError("No inspected features for this release")
+            FLAGS = tuple(dict.fromkeys(k for f in SELECTED_FEATURES for k in FEATURE_FLAGS[f]))
+        ORCHESTRATOR = None
+        if args.plan and args.action in ("apply", "verify", "restore"):
+            _, active_plan = load_plan(args.plan)
+            SELECTED_FEATURES = tuple(active_plan.get("features", SELECTED_FEATURES))
+            FLAGS = tuple(active_plan.get("flags", FLAGS))
+        if "orchestrator" in SELECTED_FEATURES and args.action in ("inspect", "prepare"):
+            ORCHESTRATOR = resolve_orchestrator(app, args.planner_models, args.execution_model)
         if args.action == "inspect":
             result = inspect(app)
         elif args.action == "prepare":
@@ -677,7 +896,7 @@ def main():
             result = restore(args.plan, args.restart)
         else:
             result = panel(app, args.backup_root.expanduser().absolute())
-        print(json.dumps({"skill_name": SKILL_NAME, "skill_version": SKILL_VERSION, **result}, ensure_ascii=False, indent=2))
+        print(json.dumps({"skill_name": SKILL_NAME, "skill_version": SKILL_VERSION, "selected_features": list(SELECTED_FEATURES), **result}, ensure_ascii=False, indent=2))
     except (PatchError, OSError, ValueError) as e:
         print(json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False), file=sys.stderr)
         return 1

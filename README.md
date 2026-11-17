@@ -1,8 +1,8 @@
 # Antigravity Pro Unlock
 
-用标准 Agent Skill 启用 Antigravity 已随应用分发的本地能力：**Swarm、Boost、Teamwork**。安装使用官方 [`skills` CLI](https://github.com/vercel-labs/skills)，支持 Codex、Claude Code、Cursor、OpenCode 等客户端。
+用标准 Agent Skill 启用 Antigravity 已随应用分发的本地能力：**Swarm、Boost、Teamwork、Orchestrator**。安装使用官方 [`skills` CLI](https://github.com/vercel-labs/skills)，支持 Codex、Claude Code、Cursor、OpenCode 等客户端。
 
-版本：**1.2.0**。项目由 `enable-antigravity-swarm` 更名并独立维护。
+版本：**1.3.0**。项目由 `enable-antigravity-swarm` 更名并独立维护。
 
 ## 安装
 
@@ -52,8 +52,8 @@ npx skills add ./antigravity-pro-unlock --skill antigravity-pro-unlock -g -a cod
 
 ```sh
 python3 skills/antigravity-pro-unlock/scripts/antigravity_pro_unlock.py --version
-python3 skills/antigravity-pro-unlock/scripts/antigravity_pro_unlock.py inspect --features swarm,boost,teamwork
-python3 skills/antigravity-pro-unlock/scripts/antigravity_pro_unlock.py prepare --features swarm,boost,teamwork
+python3 skills/antigravity-pro-unlock/scripts/antigravity_pro_unlock.py inspect --features pro
+python3 skills/antigravity-pro-unlock/scripts/antigravity_pro_unlock.py prepare --features pro
 # 完整退出 Antigravity 后，使用 prepare 返回的计划路径：
 python3 skills/antigravity-pro-unlock/scripts/antigravity_pro_unlock.py apply --plan /returned/plan.json --restart
 python3 skills/antigravity-pro-unlock/scripts/antigravity_pro_unlock.py verify --plan /returned/plan.json
@@ -68,14 +68,24 @@ python3 skills/antigravity-pro-unlock/scripts/antigravity_pro_unlock.py verify -
 | Swarm | 2.31.0、2.31.2 | 命令和原生 Board / Members / Graph |
 | Boost | 2.31.2 | 原生命令入口 |
 | Teamwork | 2.31.2 | 原生命令入口 |
+| Orchestrator | 2.31.2 / gateway | Carbon → Hydrogen → Carbon 实际交接 |
 
 补丁运行于 **macOS Apple Silicon**，需要 **Python 3.9+** 和 macOS 自带的 `codesign`、`ditto`、`ps`、`open`。跨客户端安装遵循 [Agent Skills 标准](https://agentskills.io/specification)；应用兼容性按上表限制。
 
 “Pro Unlock” 是本项目对本地功能补丁的命名，不提供订阅或额度。账号认证、gateway、模型路由及管理员控制保留。Boost、Teamwork 的完整任务效果尚未进行基准测试。
 
+## 一键启用与模型配置
+
+`--features pro`（也可用 `all`）启用当前版本已适配的能力。未知版本仍会拒绝修改；这不是订阅、额度或所有实验功能的总开关。
+
+Orchestrator 默认选择已配置的 Carbon 与 Hydrogen，自动读取现有 gateway 模型映射，不需要新增模型或 API key。Carbon 的现有选择器条目变为 **Orchestrator (Carbon) (Gateway)**；Argon 仍是单模型。Hydrogen 的 profile 同时注册交回规划的工具，因此单独选择 Hydrogen 时也会有同模型的规划/执行工具。
+
+两个模型的实际往返已在隔离目录完成文件创建、断言执行和 Carbon 复核。Argon 的共享 profile 较大，独立复制可能超过本版本的 native 字符串容量；脚本会保留原设置并拒绝该情况。
+
 ## 备份与升级
 
-- 修改前保存完整应用备份和配置备份，检查原应用及 staging 指纹。
+- 修改前保存完整应用、配置和会话数据库快照，检查原应用及 staging 指纹。
+- 应用启动可能裁剪已完成的子 agent 轨迹；新版在启动后只从已校验快照恢复缺失数据库，不覆盖新数据。已有摘要不代表完整轨迹仍存在。
 - 新计划位于 `~/.local/share/antigravity-pro-unlock/`；旧 `~/.local/share/antigravity-swarm-patch/` 计划可继续通过绝对路径使用。
 - 原会话和配置目录保持不变。升级后先检查当前版本，再为支持的版本准备新补丁；不要复用旧偏移或直接应用旧计划。
 - 修改原生二进制会使厂商签名失效；脚本对该应用进行本地签名。失败时使用计划中的源应用回滚。机制见 [mechanics.md](skills/antigravity-pro-unlock/references/mechanics.md)。
