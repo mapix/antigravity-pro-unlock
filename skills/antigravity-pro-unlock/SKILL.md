@@ -1,9 +1,9 @@
 ---
 name: antigravity-pro-unlock
-description: Expose shipped local Antigravity Pro features on macOS, including Swarm, Boost, Teamwork, and Orchestrator model handoffs. Use when these commands are missing, when restoring a local patch, or when checking feature gates after an upgrade.
+description: Expose shipped local Antigravity Pro features on macOS, including Swarm, Boost, Teamwork, and Orchestrator, with a separate fixed Carbon choice. Use when commands are missing, when separating Carbon session modes, restoring a patch, or checking gates after an upgrade.
 license: MIT
 metadata:
-  version: "1.3.0"
+  version: "1.4.0"
   platform: macos-arm64
   python: ">=3.9"
 ---
@@ -22,6 +22,7 @@ Patching requires macOS Apple Silicon, Python 3.9+ and the macOS `codesign`, `di
 | Boost | 2.31.2 | `/boost` in the command menu |
 | Teamwork | 2.31.2 | `/teamwork` in the command menu |
 | Orchestrator | 2.31.2 / gateway | Carbon planning → Hydrogen execution → Carbon review |
+| Carbon Direct | 2.31.2 / gateway / desktop UI | Separate picker entry; actual Carbon requests without phase handoffs |
 
 Boost and Teamwork command visibility has been verified; their task effectiveness has not been benchmarked. They use separate native implementations.
 
@@ -61,6 +62,14 @@ The default prefers Carbon as planner and uses Hydrogen as executor. `--planner-
 Set owned profiles through both `models` and `model_profiles`, preserving the original profile features, and add the structured `plan-execute-config`. Hydrogen also needs an execution profile to register `enter_plan_mode`; without it, the first handoff works but handback is an unknown-tool error. The Hydrogen profile exposes same-model plan/execute tools when selected directly.
 
 Relabel the existing Carbon picker entry **Orchestrator (Carbon) (Gateway)**. Model IDs, endpoint, credentials and defaultModelId are retained; do not create duplicate IDs. Argon remains a standalone entry. Application restore reverts only owned display-name changes.
+
+Carbon Direct is installed with `--features orchestrator`; it is not a separate flag name. The desktop picker exposes **Gemini 4 Carbon (Direct) (Gateway)**. It uses the inspected native BYOM identity `326` and a request-local `customModelInfoOverride` pointing at the existing `gemini-4-carbon` backend. The virtual picker ID is not a gateway API model alias. The native model identity is persisted with the conversation, so sessions can choose Direct or Orchestrator independently. Direct was verified through the actual UI and on an existing Orchestrator trajectory; all observed Direct requests returned Carbon and omitted the phase protocol.
+
+The owned Electron preload bridge selects the application's built-in HTTP RPC fallback before the UI initializes, then adapts its `GetUserStatus` catalog and outgoing configuration. It preserves TLS, CSRF headers, account fields and other BYOM overrides. Prepare updates the ASAR entry and Electron header integrity, and signs the staged app. This adapter is scoped to the inspected local desktop release; do not claim the Direct picker exists in the CLI or remote-control UI.
+
+Equivalent duplicate Carbon config rows are backed up and normalized to one Orchestrator row. Rows with different capability settings are refused. Rollback restores only matching owned rows and labels.
+
+If the user authorizes restoring interrupted sessions, record the active roots and their children before quitting, snapshot databases again after a normal exit, and preserve their goals and permission settings. Resume only the specified sessions and avoid redoing completed side effects. If the user elects to resume manually, stop automatic continuation and keep the recovery manifest.
 
 ### Extend a previous patch
 

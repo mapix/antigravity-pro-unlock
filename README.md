@@ -2,7 +2,7 @@
 
 用标准 Agent Skill 启用 Antigravity 已随应用分发的本地能力：**Swarm、Boost、Teamwork、Orchestrator**。安装使用官方 [`skills` CLI](https://github.com/vercel-labs/skills)，支持 Codex、Claude Code、Cursor、OpenCode 等客户端。
 
-版本：**1.3.0**。项目由 `enable-antigravity-swarm` 更名并独立维护。
+版本：**1.4.0**。项目由 `enable-antigravity-swarm` 更名并独立维护。
 
 ## 安装
 
@@ -69,6 +69,7 @@ python3 skills/antigravity-pro-unlock/scripts/antigravity_pro_unlock.py verify -
 | Boost | 2.31.2 | 原生命令入口 |
 | Teamwork | 2.31.2 | 原生命令入口 |
 | Orchestrator | 2.31.2 / gateway | Carbon → Hydrogen → Carbon 实际交接 |
+| Carbon Direct | 2.31.2 / gateway 桌面 UI | 独立入口、固定 Carbon、按会话保存选择 |
 
 补丁运行于 **macOS Apple Silicon**，需要 **Python 3.9+** 和 macOS 自带的 `codesign`、`ditto`、`ps`、`open`。跨客户端安装遵循 [Agent Skills 标准](https://agentskills.io/specification)；应用兼容性按上表限制。
 
@@ -79,6 +80,10 @@ python3 skills/antigravity-pro-unlock/scripts/antigravity_pro_unlock.py verify -
 `--features pro`（也可用 `all`）启用当前版本已适配的能力。未知版本仍会拒绝修改；这不是订阅、额度或所有实验功能的总开关。
 
 Orchestrator 默认选择已配置的 Carbon 与 Hydrogen，自动读取现有 gateway 模型映射，不需要新增模型或 API key。Carbon 的现有选择器条目变为 **Orchestrator (Carbon) (Gateway)**；Argon 仍是单模型。Hydrogen 的 profile 同时注册交回规划的工具，因此单独选择 Hydrogen 时也会有同模型的规划/执行工具。
+
+1.4.0 同时提供 **Gemini 4 Carbon (Direct) (Gateway)**。它使用原生 BYOM 会话身份及指向现有 Carbon 后端的请求配置，允许不同会话分别选择纯 Carbon 或 Orchestrator。虚拟菜单 ID 不会作为 API 模型名发给 gateway。已通过真实 UI 请求和旧 Orchestrator 会话的切换验证，Direct 请求均返回 `gemini-4-carbon`，不含规划／执行交接协议。
+
+桌面适配使用应用已有的 HTTP RPC 回退，保留原来的 TLS、CSRF、权限和 gateway 认证。补丁会校验并更新 ASAR 完整性、签名及数据库快照。Direct 菜单目前仅适配所列桌面版本，不代表 CLI 或远程控制界面已增加同名入口。
 
 两个模型的实际往返已在隔离目录完成文件创建、断言执行和 Carbon 复核。Argon 的共享 profile 较大，独立复制可能超过本版本的 native 字符串容量；脚本会保留原设置并拒绝该情况。
 

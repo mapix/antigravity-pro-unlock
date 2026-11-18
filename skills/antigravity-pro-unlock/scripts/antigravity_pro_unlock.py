@@ -20,7 +20,7 @@ from urllib.parse import urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 SKILL_NAME = "antigravity-pro-unlock"
-SKILL_VERSION = "1.3.0"
+SKILL_VERSION = "1.4.0"
 SUPPORTED = {"2.31.0", "2.31.2"}
 FEATURE_FLAGS = {
     "swarm": ("enable-native-swarm", "enable-plugins", "enable-customization-kind-plugin"),
@@ -34,6 +34,9 @@ FLAGS = FEATURE_FLAGS["swarm"]
 ORCHESTRATOR = None
 ORCHESTRATOR_KEY = "plan-execute-config"
 ORCHESTRATOR_PROFILE_PREFIX = "antigravity-pro-unlock/orchestrator/"
+BRIDGE_NAME = "carbon_modes_bridge.js"
+BRIDGE_START = "// AG_PRO_CARBON_MODES_START"
+BRIDGE_END = "// AG_PRO_CARBON_MODES_END"
 DEFAULT_APP = Path("/Applications/Antigravity.app")
 DEFAULT_ROOT = Path.home() / ".local/share/antigravity-pro-unlock"
 MAGICS = {b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe",
@@ -243,7 +246,107 @@ def resolve_orchestrator(app, planners="auto", execution="gemini-4-hydrogen"):
     return {"feature_key": ORCHESTRATOR_KEY, "value": config,
             "execution": dict(by_id[execution]), "planners": plans,
             "execution_profile": ORCHESTRATOR_PROFILE_PREFIX + "executor/" + by_id[execution]["enum"],
-            "scope": "model_profiles", "gateway_models": rows}
+            "scope": "model_profiles", "gateway_models": rows,
+            "direct_mode": {"native_model": 326, "backend_model": "gemini-4-carbon",
+                            "selector_id": "antigravity-pro-unlock-carbon-direct"}}
+
+def asar_entry(app, entry="dist/preload.js"):
+    archive = Path(app) / "Contents/Resources/app.asar"
+    data = archive.read_bytes()
+    if len(data) < 16 or struct.unpack_from("<I", data)[0] != 4:
+        raise PatchError("Unsupported ASAR header")
+    header_size, json_size = struct.unpack_from("<I", data, 4)[0], struct.unpack_from("<I", data, 12)[0]
+    if header_size < 8 or 16 + json_size > 8 + header_size or 8 + header_size > len(data):
+        raise PatchError("Invalid ASAR header bounds")
+    header_raw = data[16:16 + json_size]
+    tree = json.loads(header_raw)
+    record = tree
+    for part in entry.split("/"):
+        record = record.get("files", {}).get(part)
+        if not isinstance(record, dict):
+            raise PatchError(f"Missing ASAR entry {entry}")
+    if record.get("unpacked") or record.get("link") or "offset" not in record:
+        raise PatchError("The preload is not a packed regular ASAR entry")
+    start = 8 + header_size + int(record["offset"])
+    content = data[start:start + record["size"]]
+    if len(content) != record["size"]:
+        raise PatchError("ASAR preload exceeds archive")
+    if record.get("integrity", {}).get("hash") != hashlib.sha256(content).hexdigest():
+        raise PatchError("ASAR preload integrity mismatch")
+    info = plistlib.loads((Path(app) / "Contents/Info.plist").read_bytes())
+    expected = info.get("ElectronAsarIntegrity", {}).get("Resources/app.asar", {})
+    if expected.get("algorithm") != "SHA256" or expected.get("hash") != hashlib.sha256(header_raw).hexdigest():
+        raise PatchError("Electron ASAR header integrity mismatch")
+    return archive, data, header_size, tree, record, content
+
+def carbon_bridge_contract(app):
+    _, _, _, _, _, preload = asar_entry(app)
+    asset = Path(app) / "Contents/Resources/antigravity-pro-unlock" / BRIDGE_NAME
+    expected = Path(__file__).with_name(BRIDGE_NAME)
+    if not expected.is_file():
+        raise PatchError("Skill is missing the Carbon mode bridge")
+    marker = BRIDGE_START.encode() in preload and BRIDGE_END.encode() in preload
+    if asset.exists() and not marker:
+        raise PatchError("Unowned Carbon bridge asset; preserve and inspect")
+    inline = ("const source = " + json.dumps(expected.read_text()) + ";").encode()
+    return bool(marker and asset.is_file() and sha(asset) == sha(expected)
+                and f"carbon-modes {SKILL_VERSION}".encode() in preload and inline in preload
+                and b"injectCarbonModesEarly" in preload)
+
+def patch_carbon_bridge(app):
+    archive, data, header_size, tree, record, preload = asar_entry(app)
+    text = preload.decode("utf-8")
+    if text.count("installCustomFlagOverridesSync();") != 1:
+        raise PatchError("Unknown native preload startup contract")
+    if BRIDGE_START in text or BRIDGE_END in text:
+        pattern = re.compile(re.escape(BRIDGE_START) + r".*?" + re.escape(BRIDGE_END), re.S)
+        if len(pattern.findall(text)) != 1:
+            raise PatchError("Ambiguous owned Carbon bridge block")
+        text = pattern.sub("", text)
+    source_json = json.dumps(Path(__file__).with_name(BRIDGE_NAME).read_text())
+    snippet = f'''\n{BRIDGE_START}\n// carbon-modes {SKILL_VERSION}\ntry {{
+  const source = {source_json};
+  const injectCarbonModesEarly = () => {{
+    if (!document.documentElement) return false;
+    const script = document.createElement('script');
+    script.textContent = source;
+    document.documentElement.appendChild(script);
+    script.remove();
+    return true;
+  }};
+  if (!injectCarbonModesEarly()) {{
+    const observer = new MutationObserver(() => {{
+      if (injectCarbonModesEarly()) observer.disconnect();
+    }});
+    observer.observe(document, {{ childList: true, subtree: true }});
+    window.addEventListener('DOMContentLoaded', () => observer.disconnect(), {{ once: true }});
+  }}
+}} catch (_) {{ console.warn('Carbon mode bridge asset unavailable'); }}
+{BRIDGE_END}\n'''
+    changed = (text.rstrip() + snippet).encode()
+    payload = data[8 + header_size:]
+    record["offset"], record["size"] = str(len(payload)), len(changed)
+    block_size = record["integrity"].get("blockSize", 4 * 1024 * 1024)
+    record["integrity"] = {"algorithm": "SHA256", "hash": hashlib.sha256(changed).hexdigest(),
+                           "blockSize": block_size,
+                           "blocks": [hashlib.sha256(changed[i:i + block_size]).hexdigest()
+                                      for i in range(0, len(changed), block_size)]}
+    header = json.dumps(tree, separators=(",", ":"), ensure_ascii=False).encode()
+    padded = header + b"\0" * (-len(header) % 4)
+    rebuilt = struct.pack("<IIII", 4, len(padded) + 8, len(padded) + 4, len(header)) + padded + payload + changed
+    archive.write_bytes(rebuilt)
+    asset_dir = Path(app) / "Contents/Resources/antigravity-pro-unlock"
+    asset_dir.mkdir(exist_ok=True)
+    shutil.copy2(Path(__file__).with_name(BRIDGE_NAME), asset_dir / BRIDGE_NAME)
+    info_path = Path(app) / "Contents/Info.plist"
+    info = plistlib.loads(info_path.read_bytes())
+    info["ElectronAsarIntegrity"]["Resources/app.asar"]["hash"] = hashlib.sha256(header).hexdigest()
+    info_path.write_bytes(plistlib.dumps(info))
+    if not carbon_bridge_contract(app):
+        raise PatchError("Staged Carbon bridge integrity failed")
+    return {"version": SKILL_VERSION, "asset_sha256": sha(asset_dir / BRIDGE_NAME),
+            "preload_sha256": hashlib.sha256(changed).hexdigest(),
+            "native_model": 326, "backend_model": "gemini-4-carbon"}
 
 def orchestrator_defaults(obj, requested, write=False):
     profiles, models = obj.get("model_profiles"), obj.get("models")
@@ -324,8 +427,8 @@ def restore_pruned_conversation_files(plan):
         restored.append(name[:-3])
     return restored
 
-def model_label_patches(requested, path):
-    config = json.loads(Path(path).read_text())
+def model_label_patches(requested, path, config=None):
+    config = config if config is not None else json.loads(Path(path).read_text())
     rows = config.get("models", {}).get("list", [])
     result = []
     for planner in requested["planners"]:
@@ -336,13 +439,43 @@ def model_label_patches(requested, path):
                        "after": planner["orchestrator_label"]})
     return result
 
+def model_row_normalization(requested, config):
+    rows = config.get("models", {}).get("list", [])
+    changes = []
+    for planner in requested["planners"]:
+        matched = [x for x in rows if x.get("modelId") == planner["model_id"]]
+        if len(matched) <= 1:
+            continue
+        comparable = [{k: v for k, v in x.items() if k != "displayName"} for x in matched]
+        if any(x != comparable[0] for x in comparable[1:]):
+            raise PatchError("Duplicate Carbon entries differ in model settings; preserve and inspect")
+        chosen = next((x for x in matched if x.get("displayName") == planner["orchestrator_label"]), matched[0])
+        changes.append({"model_id": planner["model_id"], "before": matched, "after": [chosen]})
+    return changes
+
+def normalize_model_config(config, changes, restore=False):
+    rows = config.get("models", {}).get("list", [])
+    for change in changes:
+        old, new = (change["after"], change["before"]) if restore else (change["before"], change["after"])
+        current = [x for x in rows if x.get("modelId") == change["model_id"]]
+        if current == new:
+            continue
+        if current != old:
+            raise PatchError("Gateway model rows changed independently; preserve them")
+        index = next(i for i, x in enumerate(rows) if x.get("modelId") == change["model_id"])
+        rows[:] = [x for x in rows if x.get("modelId") != change["model_id"]]
+        rows[index:index] = json.loads(json.dumps(new))
+
 def apply_model_labels(plan, restore=False):
     changes = plan.get("model_label_patches", [])
-    if not changes:
+    normalized = plan.get("model_row_normalization", [])
+    if not changes and not normalized:
         return
     path = Path(plan["config_dir"]) / "config.json"
     config = json.loads(path.read_text())
     rows = config.get("models", {}).get("list", [])
+    if not restore:
+        normalize_model_config(config, normalized)
     for change in changes:
         matches = [x for x in rows if x.get("modelId") == change["model_id"]]
         if len(matches) != 1:
@@ -355,6 +488,8 @@ def apply_model_labels(plan, restore=False):
             row.pop("displayName", None)
         else:
             row["displayName"] = new
+    if restore:
+        normalize_model_config(config, normalized, restore=True)
     private_json(path, config)
 
 def defaults_contract(app, base_plan=None, orchestrator=None, inspect_only=False):
@@ -397,7 +532,7 @@ def defaults_contract(app, base_plan=None, orchestrator=None, inspect_only=False
         orchestrator_defaults(patched, requested, write=True)
     new = json.dumps(patched, separators=(",", ":"), ensure_ascii=False).encode()
     already = all(obj["base"].get(key) is True for key in FLAGS) and (not requested or orchestrator_before)
-    if not inspect_only and not already and len(new) > len(original):
+    if not inspect_only and (base_plan or (not already and len(new) > len(original))):
         if not base_plan:
             raise PatchError("Compact prior patch needs --base-plan for verified capacity")
         _, base = load_plan(base_plan)
@@ -469,7 +604,9 @@ def inspect(app):
     return {"app": str(app), "identity": info, "verified_version": info["version"] in SUPPORTED,
             "flags_before": contract["flags_before"],
             "orchestrator": ORCHESTRATOR, "orchestrator_before": contract["orchestrator_before"],
-            "already_patched": contract["already_patched"], "live": live}
+            "already_patched": contract["already_patched"],
+            "carbon_direct_bridge": carbon_bridge_contract(app) if ORCHESTRATOR else None,
+            "live": live}
 
 def prepare(app, backup_root, base_plan=None):
     external_harness_guard()
@@ -483,8 +620,17 @@ def prepare(app, backup_root, base_plan=None):
         baseline.pop("runtime", None)
     except PatchError:
         pass
-    labels = model_label_patches(ORCHESTRATOR, Path.home() / ".gemini/config/config.json") if ORCHESTRATOR else []
-    if contract["already_patched"] and all(x["before"] == x["after"] for x in labels):
+    normalized = []
+    if ORCHESTRATOR:
+        labels_path = Path.home() / ".gemini/config/config.json"
+        labels_config = json.loads(labels_path.read_text())
+        normalized = model_row_normalization(ORCHESTRATOR, labels_config)
+        normalize_model_config(labels_config, normalized)
+        labels = model_label_patches(ORCHESTRATOR, labels_path, labels_config)
+    else:
+        labels = []
+    bridge_enabled = carbon_bridge_contract(app) if ORCHESTRATOR else True
+    if contract["already_patched"] and bridge_enabled and not normalized and all(x["before"] == x["after"] for x in labels):
         return {"action": "noop", "reason": "All required defaults already enabled",
                 "next": "Run verify, then panel if necessary"}
     if not ORCHESTRATOR and baseline and all(k in baseline["enabled_flags"] for k in FLAGS) and ("swarm" not in SELECTED_FEATURES or baseline["swarm_panels"]):
@@ -523,11 +669,24 @@ def prepare(app, backup_root, base_plan=None):
         f.flush()
         os.fsync(f.fileno())
     (folder / "defaults-original.bin").write_bytes(contract["original"])
+    bridge = patch_carbon_bridge(staged) if ORCHESTRATOR else None
     sign_debug_app(staged)
     if identity(staged) != info:
         raise PatchError("Application identity changed unexpectedly")
-    for rel in ("Contents/Info.plist", "Contents/Resources/app.asar",
-                "Contents/Resources/default_app.asar"):
+    preserved = ["Contents/Resources/default_app.asar"]
+    if not bridge:
+        preserved += ["Contents/Info.plist", "Contents/Resources/app.asar"]
+    else:
+        old_info = plistlib.loads((original / "Contents/Info.plist").read_bytes())
+        new_info = plistlib.loads((staged / "Contents/Info.plist").read_bytes())
+        new_info["ElectronAsarIntegrity"] = old_info["ElectronAsarIntegrity"]
+        if new_info != old_info:
+            raise PatchError("Unexpected application metadata changes")
+        old_archive = asar_entry(original)
+        new_archive = asar_entry(staged)
+        if new_archive[1][8 + new_archive[2]:][:len(old_archive[1]) - 8 - old_archive[2]] != old_archive[1][8 + old_archive[2]:]:
+            raise PatchError("Unrelated ASAR payload changed")
+    for rel in preserved:
         if sha(staged / rel) != sha(original / rel):
             raise PatchError(f"Unexpected change to {rel}")
     if not defaults_contract(staged)["already_patched"]:
@@ -542,7 +701,9 @@ def prepare(app, backup_root, base_plan=None):
             "config_dir": str(config_dir), "data_dir": str(data_dir),
             "conversation_snapshot": conversation_snapshot,
             "orchestrator": ORCHESTRATOR,
+            "carbon_direct_bridge": bridge,
             "model_label_patches": labels,
+            "model_row_normalization": normalized,
             "state": "prepared"}
     plan_path = folder / "plan.json"
     private_json(plan_path, plan)
@@ -652,6 +813,8 @@ def verify(app, plan_path=None):
             for expected in orchestrator["planners"]:
                 if by_id[expected["model_id"]]["label"] != expected["orchestrator_label"]:
                     raise PatchError("Orchestrator UI model label is not active")
+            if plan.get("carbon_direct_bridge") and not carbon_bridge_contract(app):
+                raise PatchError("Carbon Direct bridge is missing or changed")
         baseline = plan.get("baseline") or {}
         if plan.get("baseline") is not None and baseline.get("conversation_id_source") != "conversation_files":
             raise PatchError("Legacy plan used resident trajectory IDs; prepare a fresh plan for durable data verification")
@@ -668,6 +831,10 @@ def verify(app, plan_path=None):
         result["orchestrator"] = {"planners": [x["model_id"] for x in orchestrator["planners"]],
                                   "execution": orchestrator["execution"]["model_id"],
                                   "defaults_verified": True, "live_handoff_observation_required": True}
+        if plan_path and plan.get("carbon_direct_bridge"):
+            result["carbon_direct"] = {"bridge_verified": True, "native_model": 326,
+                                      "backend_model": "gemini-4-carbon",
+                                      "ui_and_session_observation_required": True}
     return result
 
 def restore(path, restart):

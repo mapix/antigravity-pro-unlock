@@ -187,6 +187,57 @@ class NativeContractTests(unittest.TestCase):
         self.assertEqual(unlock.fingerprint(self.app), before)
 
 
+class CarbonArchiveTests(unittest.TestCase):
+    def test_preload_patch_preserves_unrelated_payload_and_checks_integrity(self):
+        import hashlib
+        with tempfile.TemporaryDirectory(prefix="carbon-archive-test-") as td:
+            app = Path(td) / "Antigravity.app"
+            resources = app / "Contents/Resources"
+            resources.mkdir(parents=True)
+            preload = b"function installCustomFlagOverridesSync() {}\ninstallCustomFlagOverridesSync();\n"
+            other = b"export default 42;"
+            def entry(data, offset):
+                digest = hashlib.sha256(data).hexdigest()
+                return {"size": len(data), "offset": str(offset), "integrity": {
+                    "algorithm": "SHA256", "hash": digest, "blockSize": 4194304, "blocks": [digest]}}
+            tree = {"files": {"dist": {"files": {"preload.js": entry(preload, 0),
+                                                   "other.js": entry(other, len(preload))}}}}
+            header = json.dumps(tree).encode()
+            padded = header + b"\0" * (-len(header) % 4)
+            archive = struct.pack("<IIII", 4, len(padded) + 8, len(padded) + 4, len(header)) + padded + preload + other
+            (resources / "app.asar").write_bytes(archive)
+            info = {"CFBundleIdentifier": "com.google.antigravity", "keep": "unchanged",
+                    "ElectronAsarIntegrity": {"Resources/app.asar": {
+                        "algorithm": "SHA256", "hash": hashlib.sha256(header).hexdigest()}}}
+            (app / "Contents/Info.plist").write_bytes(plistlib.dumps(info))
+            unlock.patch_carbon_bridge(app)
+            self.assertTrue(unlock.carbon_bridge_contract(app))
+            self.assertEqual(unlock.asar_entry(app, "dist/other.js")[-1], other)
+            patched = unlock.asar_entry(app)
+            self.assertTrue(patched[1][8 + patched[2]:].startswith(preload + other))
+            self.assertIn(b"injectCarbonModesEarly", patched[-1])
+            asset = resources / "antigravity-pro-unlock/carbon_modes_bridge.js"
+            asset.write_text("changed independently")
+            self.assertFalse(unlock.carbon_bridge_contract(app))
+
+    def test_duplicate_model_normalization_is_reversible_and_rejects_different_settings(self):
+        requested = {"planners": [{"model_id": "gemini-4-carbon", "orchestrator_label": "Orchestrator (Carbon) (Gateway)"}]}
+        config = {"models": {"defaultModelId": "gemini-4-carbon", "list": [
+            {"modelId": "gemini-4-carbon", "displayName": "Orchestrator (Carbon) (Gateway)", "maxTokens": 100},
+            {"modelId": "gemini-4-carbon", "displayName": "Carbon", "maxTokens": 100},
+            {"modelId": "gemini-4-hydrogen", "keep": True}]}, "unknown": {"keep": [1, 2]}}
+        original = json.loads(json.dumps(config))
+        changes = unlock.model_row_normalization(requested, config)
+        unlock.normalize_model_config(config, changes)
+        self.assertEqual(len(config["models"]["list"]), 2)
+        self.assertEqual(config["unknown"], original["unknown"])
+        unlock.normalize_model_config(config, changes, restore=True)
+        self.assertEqual(config, original)
+        config["models"]["list"][1]["maxTokens"] = 200
+        with self.assertRaisesRegex(unlock.PatchError, "differ"):
+            unlock.model_row_normalization(requested, config)
+
+
 class RuntimeBoundaryTests(unittest.TestCase):
     def test_antigravity_ancestor_refused(self):
         table = {os.getpid(): (99, "python fixture"), 99: (0, "/Applications/Antigravity.app/Contents/MacOS/Antigravity")}

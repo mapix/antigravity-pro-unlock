@@ -1,6 +1,6 @@
 {
   "name": "antigravity-pro-unlock",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "private": true,
   "description": "Standard Agent Skill for shipped local Antigravity Pro features on macOS",
   "license": "MIT",
@@ -12,7 +12,7 @@
     "node": ">=22.20.0"
   },
   "scripts": {
-    "test": "python3 -m unittest discover -s tests -v",
+    "test": "python3 -m unittest discover -s tests -v && node --test tests/test_carbon_modes.cjs",
     "test:install": "python3 scripts/test_install.py",
     "package": "python3 scripts/package_skill.py"
   },

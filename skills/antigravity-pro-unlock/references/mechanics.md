@@ -72,4 +72,10 @@ Hydrogen must have the plan/execute profile too, to expose the `enter_plan_mode`
 
 Gateway `models.list` permits labels, token limits and capability metadata, but no separate underlying-model alias. The local adaptation relabels the existing Carbon row while preserving its modelId. It does not register a duplicate synthetic API model.
 
+Version 1.4.0 adds a separate desktop Carbon choice with native BYOM model identity 326. Each Direct request carries a Google Gemini `ModelInfo` override for the existing Carbon backend. The native feature provider sees the separate identity, so the Carbon Orchestrator profile is not activated. Existing user-supplied BYOM overrides are retained. Actual UI requests and an old Orchestrator trajectory were verified to use Carbon without the phase protocol.
+
+The Hub normally uses `wsTransport=3`. The preload installs before the frontend and selects its built-in `useWebSocket=false` HTTP fallback, retaining the route and history state. The adapter handles JSON, protobuf and framed gRPC-web payloads, including opaque trailers. It adapts both the direct catalog RPC and `GetUserStatus.userStatus.cascadeModelConfigData`; only intercepting the catalog RPC misses normal UI hydration. TLS and CSRF remain enabled.
+
+ASAR preparation appends a replacement preload payload, retains every original unrelated payload byte and offset, updates the preload block hashes, and updates `ElectronAsarIntegrity` using SHA-256 of the raw JSON header. The inline bridge avoids sandboxed preload filesystem requirements. The source backup and conversation snapshots remain independently recoverable. Equivalent duplicate Carbon rows are normalized transactionally with a recorded reverse patch.
+
 Completed deeply nested trajectory databases were observed being pruned at app startup, even while summary records remained. Snapshot payloads before quitting. Checkpoint only owned database copies, record hashes, then restore missing files after startup without overwriting newer live data. Initial pre-snapshot losses cannot be recovered merely by restoring the app binary.

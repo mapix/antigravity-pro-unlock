@@ -12,7 +12,8 @@ SOURCE = ROOT / "skills" / NAME
 def main():
     version = json.loads((ROOT / "package.json").read_text())["version"]
     files = [SOURCE / "SKILL.md", SOURCE / "LICENSE",
-             SOURCE / "references/mechanics.md", SOURCE / "scripts/antigravity_pro_unlock.py"]
+             SOURCE / "references/mechanics.md", SOURCE / "scripts/antigravity_pro_unlock.py",
+             SOURCE / "scripts/carbon_modes_bridge.js"]
     for file in files:
         if not file.is_file() or file.is_symlink():
             raise SystemExit(f"Missing or linked package input: {file}")
