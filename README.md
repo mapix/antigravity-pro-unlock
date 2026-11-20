@@ -1,80 +1,80 @@
 # Antigravity Pro Unlock
 
-为 Mac 上的 Antigravity 启用本地功能。Gateway 用户可以在同一个模型菜单中选择 **Carbon Direct** 或 **Orchestrator**，并按需提高会话的 checkpoint 上限。当前技能版本为 **1.5.0**。
+Enable built-in Antigravity features on Mac. Gateway users can choose **Carbon Direct** or **Orchestrator** from the same model menu and optionally raise the session checkpoint limit. The current skill version is **1.5.0**.
 
-| 功能 | 用法 |
+| Feature | What it does |
 | --- | --- |
-| Swarm | 用 `/swarm` 组织多个 agent，在看板查看任务和成员。 |
-| Boost、Teamwork | 在支持的版本中启用 `/boost` 和 `/teamwork`。 |
-| Carbon Direct | 整个会话使用 Carbon。 |
-| Orchestrator | Carbon 规划，Hydrogen 执行，再由 Carbon 复核。 |
-| 长上下文 | 用 `--checkpoint-limit` 设置 Carbon Direct 和 Orchestrator 各阶段的 checkpoint 上限。 |
+| Swarm | Use `/swarm` to coordinate multiple agents and review tasks and members on the board. |
+| Boost and Teamwork | Enable `/boost` and `/teamwork` on supported versions. |
+| Carbon Direct | Use Carbon throughout a session. |
+| Orchestrator | Let Carbon plan, Hydrogen execute, and Carbon review. |
+| Longer context | Set the checkpoint limit for Carbon Direct and each Orchestrator phase with `--checkpoint-limit`. |
 
-补丁针对应用内置功能，使用现有账号和 Gateway 模型配置。订阅权益、配额和上游模型限制仍由服务端决定。
+The patch uses your existing account and Gateway model configuration. The service still controls subscription access, quotas, and upstream model limits.
 
-## 安装技能
+## Install the skill
 
-用 [skills CLI](https://github.com/vercel-labs/skills) 安装到 Codex、Claude Code、Cursor 和 OpenCode。CLI 需要 Node.js 22.20.0 或更高版本。
+Use the [skills CLI](https://github.com/vercel-labs/skills) to install the skill for Codex, Claude Code, Cursor, or OpenCode. The CLI requires Node.js 22.20.0 or later.
 
 ```sh
 npx skills add mapix/antigravity-pro-unlock --skill antigravity-pro-unlock -g -a codex -a claude-code -a cursor -a opencode -y
 ```
 
-只装给 Codex 时，保留 `-a codex` 即可。省略客户端参数可交互选择。安装技能后，在 Antigravity 之外的客户端里提出请求，例如：
+For Codex only, keep `-a codex`. Omit the client flags to select clients interactively. After installing the skill, ask for the patch from a client outside Antigravity. For example:
 
-> 用 antigravity-pro-unlock 检查我的 Antigravity，启用 Orchestrator 和 Carbon Direct，并把 checkpoint 上限设为 512,000 token。当前任务结束后再重启应用。
+> Use antigravity-pro-unlock to inspect my Antigravity installation, enable Orchestrator and Carbon Direct, and set the checkpoint limit to 512,000 tokens. Wait for my current tasks to finish before restarting the app.
 
-## 兼容性与验证
+## Compatibility and verification
 
-应用补丁支持 **Apple Silicon Mac**，需要 **Python 3.9+** 以及 macOS 自带的 `codesign`、`ditto`、`ps`、`open`。
+The app patch supports **Apple Silicon Macs** and requires **Python 3.9 or later** along with the macOS tools `codesign`, `ditto`, `ps`, and `open`.
 
-| Antigravity 版本 | 支持与验证范围 |
+| Antigravity version | What was verified |
 | --- | --- |
-| 2.31.0 | Swarm 命令和看板。 |
-| 2.31.2 | Swarm 看板、Boost 和 Teamwork 命令。Gateway 下已验证 Carbon Direct 和 Orchestrator 实际交接。 |
-| 2.33.0 | 已确认 Swarm、Boost、Teamwork 功能开关及桌面双模型入口。隔离环境通过模拟网关验证了 Carbon Direct 和 Orchestrator 往返，并读回 512,000 token 的 checkpoint 上限。 |
+| 2.31.0 | The Swarm command and board. |
+| 2.31.2 | The Swarm board and the Boost and Teamwork commands. Carbon Direct and Orchestrator handoffs were verified with Gateway. |
+| 2.33.0 | The Swarm, Boost, and Teamwork feature flags and both entries in the desktop model menu. An isolated test with a mock Gateway verified Carbon Direct, the full Orchestrator round trip, and a 512,000-token checkpoint limit. |
 
-Carbon Direct 的独立入口适用于桌面模型菜单。2.33.0 在 Gateway 只配置 Hydrogen Medium 时，可以用该入口作为执行模型。实际网关对接近 512K token 请求的承载能力尚未测试。
+The separate Carbon Direct entry is available in the desktop model menu. On 2.33.0, Orchestrator can use a configured Hydrogen Medium entry when the base Hydrogen model is absent. Requests near 512,000 tokens have yet to be tested against the upstream Gateway.
 
-## 手动应用补丁
+## Apply the patch manually
 
-从仓库根目录运行以下命令。先检查和准备补丁，等正在运行的 Antigravity 任务结束后再退出应用并应用。请从外部终端执行，退出 Antigravity 会中断它自己的 agent。
+Run the following commands from a terminal outside Antigravity, starting at the repository root. Inspect and prepare the patch first. Wait for active Antigravity tasks to finish before quitting the app and applying the patch.
 
 ```sh
 SCRIPT=skills/antigravity-pro-unlock/scripts/antigravity_pro_unlock.py
 python3 "$SCRIPT" inspect --features pro
 python3 "$SCRIPT" prepare --features pro
-# 完全退出 Antigravity 后，把下面的路径替换为 prepare 返回的计划路径。
+# Quit Antigravity completely, then replace this path with the plan returned by prepare.
 python3 "$SCRIPT" apply --plan /returned/plan.json --restart
 python3 "$SCRIPT" verify --plan /returned/plan.json
 ```
 
-`--features pro` 和 `--features all` 选择当前版本已适配的功能。也可以单选 `--features orchestrator`，它会同时提供 Carbon Direct。省略 `--features` 时默认选择 Swarm。
+Both `--features pro` and `--features all` select the features supported on the installed version. Use `--features orchestrator` to enable Orchestrator and Carbon Direct together. If you omit `--features`, the script selects Swarm.
 
-在 2.33.0 上将 Carbon Direct、Carbon 规划和 Hydrogen 执行的 checkpoint 上限设为 **512,000 token**：
+To set the checkpoint limit to **512,000 tokens** for Carbon Direct and the Carbon and Hydrogen phases of Orchestrator on 2.33.0, run these commands instead of the inspection and preparation commands above:
 
 ```sh
 python3 "$SCRIPT" inspect --features orchestrator --checkpoint-limit 512000
 python3 "$SCRIPT" prepare --features orchestrator --checkpoint-limit 512000
 ```
 
-准备好的计划会记录上限，后续 `apply` 和 `verify` 使用同一份计划。首次安装时省略该参数会沿用应用默认值。实际可用空间还受模型上下文、输出预留和请求配置约束。
+The plan records the limit. Use the same plan for `apply` and `verify`. Omitting the option on a fresh install uses the app defaults. The effective limit also depends on the model's context window, output reservation, and request settings.
 
-## 备份、升级与回滚
+## Back up, upgrade, and roll back
 
-准备阶段会备份应用、配置和会话数据库。新版启动时可能清理旧轨迹，脚本会从已校验的快照补回缺失数据库，保留已存在的文件。计划和备份默认存放在 `~/.local/share/antigravity-pro-unlock/`。
+Preparation backs up the app, configuration, and conversation databases. A newer release may prune old conversation data on startup. The script restores missing database files from the verified snapshot and keeps any files that already exist. Plans and backups are stored in `~/.local/share/antigravity-pro-unlock/` by default.
 
-升级 Antigravity 后，请针对新版本重新检查并准备补丁。若在同一版本的已有补丁上增加功能，准备时传入 `--base-plan /previous/verified/plan.json`，以检查旧补丁和备份是否匹配。旧版技能留下的计划可以继续用绝对路径引用。
+After upgrading Antigravity, inspect the new version and prepare a new patch. To add features to an existing patch on the same app version, pass `--base-plan /previous/verified/plan.json` to `prepare` so it can check the patch and backup. Plans created by earlier skill versions can still be referenced by their absolute paths.
 
-要回滚某次补丁，先退出 Antigravity，再使用那次的计划：
+To roll back a patch, quit Antigravity and use the plan for that patch:
 
 ```sh
 python3 "$SCRIPT" restore --plan /returned/plan.json --restart
 ```
 
-技能和应用补丁分别管理。更新或卸载技能可用 `npx skills update antigravity-pro-unlock -g` 或 `npx skills remove antigravity-pro-unlock -g -y`。补丁的详细流程和验证边界见[技能说明](skills/antigravity-pro-unlock/SKILL.md)及[实现说明](skills/antigravity-pro-unlock/references/mechanics.md)。
+Manage the skill with `npx skills update antigravity-pro-unlock -g` or `npx skills remove antigravity-pro-unlock -g -y`. Use `restore` to roll back the app patch. See the [skill instructions](skills/antigravity-pro-unlock/SKILL.md) and [implementation notes](skills/antigravity-pro-unlock/references/mechanics.md) for details and verification limits.
 
-## 开发与打包
+## Develop and package
 
 ```sh
 npm ci --ignore-scripts
@@ -83,4 +83,4 @@ npm run test:install
 npm run package
 ```
 
-测试使用一次性应用和安装目录。技能 ZIP 和 SHA-256 位于 `dist/`，用于单独分发技能及许可证。应用、会话、配置和凭据不打包。
+Tests use disposable app fixtures and installation directories. The skill ZIP and SHA-256 checksum go to `dist/`. The ZIP contains the skill and its license. It excludes the app, conversations, configuration, and credentials.
