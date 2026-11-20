@@ -1,9 +1,9 @@
 ---
 name: antigravity-pro-unlock
-description: Expose shipped local Antigravity Pro features on macOS, including Swarm, Boost, Teamwork, and Orchestrator, with a separate fixed Carbon choice. Use when commands are missing, when separating Carbon session modes, restoring a patch, or checking gates after an upgrade.
+description: Expose shipped local Antigravity Pro features on macOS, including Swarm, Boost, Teamwork, and Orchestrator, with a separate fixed Carbon choice and an optional Gateway dictation preview. Use when commands are missing, when separating Carbon session modes, trying Gateway dictation, restoring a patch, or checking gates after an upgrade.
 license: MIT
 metadata:
-  version: "1.5.0"
+  version: "1.6.0"
   platform: macos-arm64
   python: ">=3.9"
 ---
@@ -24,6 +24,7 @@ Patching requires macOS Apple Silicon, Python 3.9+ and the macOS `codesign`, `di
 | Orchestrator | 2.31.2 / gateway | Carbon planning → Hydrogen execution → Carbon review |
 | Carbon Direct | 2.31.2 / gateway / desktop UI | Separate picker entry; actual Carbon requests without phase handoffs |
 | 2.33.0 Gateway | 2.33.0 / isolated language server | Carbon Direct and Orchestrator round trip with a local mock Gateway |
+| Gateway dictation | 2.33.0 / separate desktop app | Native microphone control sends audio on stop and inserts the resulting text into the draft |
 
 Boost and Teamwork command visibility has been verified; their task effectiveness has not been benchmarked. They use separate native implementations.
 
@@ -87,6 +88,21 @@ python3 scripts/antigravity_pro_unlock.py prepare --features pro --base-plan /pr
 The script validates the current fingerprint, source backup, saved defaults offset/length and whitespace-only padding before reusing capacity. A missing or stale plan requires investigation; do not bypass validation.
 
 New plans use `~/.local/share/antigravity-pro-unlock/`. Existing plans under `~/.local/share/antigravity-swarm-patch/` remain usable by their absolute `--plan` or `--base-plan` paths. Do not relocate application data or legacy backup contents during this rename.
+
+## Optional Gateway dictation preview
+
+Build from outside Antigravity. Resolve `scripts/voice/build.py` relative to this skill directory. Use a new app destination and an isolated profile. `--pro` requires a running, verified Pro patched 2.33.0 source in Gateway mode; the builder checks its live model catalog and preserves its Carbon bridge and checkpoint cap. Omit `--pro` for a voice-only preview from the stock app, using separate paths.
+
+```sh
+python3 scripts/voice/build.py --pro --source /Applications/Antigravity.app \
+  --app "$HOME/Applications/Antigravity Pro Voice.app" \
+  --data "$HOME/.local/share/antigravity-pro-voice"
+open "$HOME/Applications/Antigravity Pro Voice.app"
+```
+
+The builder copies only `gateway` and `models` from `~/.gemini/config/config.json` (or `--config PATH`) into the private preview profile. Protect that copy and keep Gateway addresses and credentials out of Git and shared output. The configured HTTPS Gateway must accept the Vertex AI passthrough for `gemini-3.5-transcribe:generateContent`. `--reuse-data` uses the existing isolated config with a new app destination.
+
+Select **Dictation Backend → Gateway**, then start and stop recording from the composer microphone. Check that the result appears in the draft without sending it. **Antigravity native** restores the original backend. Gateway mode is dictation only. Fresh Pro profiles may still need Swarm board registration; app signing and presence of the mic are insufficient to claim that either the board or dictation works.
 
 ## Upgrade and recovery
 

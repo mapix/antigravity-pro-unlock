@@ -20,7 +20,7 @@ from urllib.parse import urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 SKILL_NAME = "antigravity-pro-unlock"
-SKILL_VERSION = "1.5.0"
+SKILL_VERSION = "1.6.0"
 SUPPORTED = {"2.31.0", "2.31.2", "2.33.0"}
 FEATURE_FLAGS = {
     "swarm": ("enable-native-swarm", "enable-plugins", "enable-customization-kind-plugin"),

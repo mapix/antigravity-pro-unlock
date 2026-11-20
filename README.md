@@ -1,6 +1,6 @@
 # Antigravity Pro Unlock
 
-Enable built-in Antigravity features on Mac. Gateway users can choose **Carbon Direct** or **Orchestrator** from the same model menu and optionally raise the session checkpoint limit. The current skill version is **1.5.0**.
+Enable built-in Antigravity features on Mac. Gateway users can choose **Carbon Direct** or **Orchestrator** from the same model menu and optionally raise the session checkpoint limit. The current skill version is **1.6.0**.
 
 | Feature | What it does |
 | --- | --- |
@@ -9,6 +9,7 @@ Enable built-in Antigravity features on Mac. Gateway users can choose **Carbon D
 | Carbon Direct | Use Carbon throughout a session. |
 | Orchestrator | Let Carbon plan, Hydrogen execute, and Carbon review. |
 | Longer context | Set the checkpoint limit for Carbon Direct and each Orchestrator phase with `--checkpoint-limit`. |
+| Gateway dictation | Use the composer microphone to transcribe through your Gateway in a separate 2.33.0 app. |
 
 The patch uses your existing account and Gateway model configuration. The service still controls subscription access, quotas, and upstream model limits.
 
@@ -59,6 +60,26 @@ python3 "$SCRIPT" prepare --features orchestrator --checkpoint-limit 512000
 ```
 
 The plan records the limit. Use the same plan for `apply` and `verify`. Omitting the option on a fresh install uses the app defaults. The effective limit also depends on the model's context window, output reservation, and request settings.
+
+## Try Gateway dictation
+
+The optional preview supports **Antigravity 2.33.0 on Apple Silicon**. It creates a separate app and profile using the `gateway` and `models` sections of your local `~/.gemini/config/config.json`. Your Gateway must accept HTTPS requests to its Vertex AI `gemini-3.5-transcribe:generateContent` passthrough route. Pass `--config` to use a different local config file. Keep the preview profile private: its copy of the config includes the Gateway key.
+
+From the repository root, build from a verified Pro installation. Keep the source app running in Gateway mode so the builder can check the live model catalog and confirm the Pro patch. For a voice-only preview from a stock 2.33.0 bundle, omit `--pro` and pick separate destination paths.
+
+```sh
+python3 skills/antigravity-pro-unlock/scripts/voice/build.py --pro \
+  --source /Applications/Antigravity.app \
+  --app "$HOME/Applications/Antigravity Pro Voice.app" \
+  --data "$HOME/.local/share/antigravity-pro-voice"
+open "$HOME/Applications/Antigravity Pro Voice.app"
+```
+
+Open **Dictation Backend → Gateway** in the app menu, grant microphone access if prompted, then click the composer's mic. Stop the recording to send the audio for transcription. The returned text goes into the draft for review. Select **Antigravity native** to switch back to the original voice backend. Gateway dictation supports English and Simplified Chinese; it does not provide live voice conversations.
+
+Use a new app destination for each build. To rebuild with an existing preview profile, pass `--reuse-data`; this keeps its current Gateway settings. The Pro copy retains the source patch and the Swarm sidecar startup option. A fresh profile may need separate Swarm board registration. Ordinary `--features pro` installs do not enable dictation.
+
+A desktop test with fixture audio verified that Gateway text reached the native composer after a 6.7 second transcription. Physical microphone acceptance of that repair is pending.
 
 ## Back up, upgrade, and roll back
 

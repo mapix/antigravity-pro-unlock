@@ -3,6 +3,7 @@ import argparse
 import json
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,6 +29,8 @@ def validate_install(cwd, copied=False):
             relative = original.relative_to(ROOT / "skills" / NAME)
             assert (canonical / relative).read_bytes() == original.read_bytes(), relative
             assert (claude / relative).read_bytes() == original.read_bytes(), relative
+    subprocess.run([sys.executable, str(claude / "scripts/voice/build.py"), "--help"],
+                   cwd=cwd, capture_output=True, check=True, timeout=10)
 
 
 def main():

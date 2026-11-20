@@ -13,7 +13,9 @@ def main():
     version = json.loads((ROOT / "package.json").read_text())["version"]
     files = [SOURCE / "SKILL.md", SOURCE / "LICENSE",
              SOURCE / "references/mechanics.md", SOURCE / "scripts/antigravity_pro_unlock.py",
-             SOURCE / "scripts/carbon_modes_bridge.js"]
+             SOURCE / "scripts/carbon_modes_bridge.js",
+             SOURCE / "scripts/voice/build.py", SOURCE / "scripts/voice/gateway.cjs",
+             SOURCE / "scripts/voice/renderer.js"]
     for file in files:
         if not file.is_file() or file.is_symlink():
             raise SystemExit(f"Missing or linked package input: {file}")
@@ -29,7 +31,9 @@ def main():
     with zipfile.ZipFile(archive) as bundle:
         assert bundle.testzip() is None
         assert len(bundle.namelist()) == len(files)
-        compile(bundle.read(f"{NAME}/scripts/antigravity_pro_unlock.py"), "antigravity_pro_unlock.py", "exec")
+        for file in files:
+            if file.suffix == ".py":
+                compile(bundle.read(f"{NAME}/{file.relative_to(SOURCE)}"), file.name, "exec")
     checksum = hashlib.sha256(archive.read_bytes()).hexdigest()
     Path(str(archive) + ".sha256").write_text(f"{checksum}  {archive.name}\n")
     print(json.dumps({"archive": str(archive), "version": version, "sha256": checksum, "files": len(files)}, indent=2))

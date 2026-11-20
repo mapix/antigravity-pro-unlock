@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.6.0 — 2026-11-20
+
+- Package optional Gateway dictation for Antigravity 2.33.0 on Apple Silicon in a separate app and profile.
+- Use the composer microphone and insert transcription into the draft. Add a menu switch to return to the native backend.
+- Allow the Gateway response to arrive after the original three second finalization window and surface transcription errors in the composer.
+- Preserve an inspected Pro patch when building from a verified source with `--pro`.
+
+## 1.5.0 — 2026-11-20
+
+- Add 2.33.0 support and an optional checkpoint limit across Carbon Direct and Orchestrator.
+
+## 1.4.0 — 2026-11-18
+
+- Add a separate Carbon Direct model entry alongside Orchestrator.
+
 ## 1.3.0 — 2026-11-17
 
 - Add the `pro` / `all` preset for the detected release's inspected capabilities.
