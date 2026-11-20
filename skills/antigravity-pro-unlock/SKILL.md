@@ -3,7 +3,7 @@ name: antigravity-pro-unlock
 description: Expose shipped local Antigravity Pro features on macOS, including Swarm, Boost, Teamwork, and Orchestrator, with a separate fixed Carbon choice. Use when commands are missing, when separating Carbon session modes, restoring a patch, or checking gates after an upgrade.
 license: MIT
 metadata:
-  version: "1.4.0"
+  version: "1.5.0"
   platform: macos-arm64
   python: ">=3.9"
 ---
@@ -23,6 +23,7 @@ Patching requires macOS Apple Silicon, Python 3.9+ and the macOS `codesign`, `di
 | Teamwork | 2.31.2 | `/teamwork` in the command menu |
 | Orchestrator | 2.31.2 / gateway | Carbon planning → Hydrogen execution → Carbon review |
 | Carbon Direct | 2.31.2 / gateway / desktop UI | Separate picker entry; actual Carbon requests without phase handoffs |
+| 2.33.0 Gateway | 2.33.0 / isolated language server | Carbon Direct and Orchestrator round trip with a local mock Gateway |
 
 Boost and Teamwork command visibility has been verified; their task effectiveness has not been benchmarked. They use separate native implementations.
 
@@ -55,7 +56,7 @@ For the Pro feature bundle, explicitly request `pro`. For a specific feature, se
 
 ## Orchestrator model requirements
 
-Resolve existing models from the authenticated gateway catalog. The inspected mappings are Carbon `MODEL_PLACEHOLDER_M349`, Argon `MODEL_PLACEHOLDER_M418` and Hydrogen `MODEL_PLACEHOLDER_M340`. Reject missing/disabled models or changed mappings. Do not invent enum slots or add credentials.
+Resolve existing models from the authenticated gateway catalog. On 2.31.2 Carbon is M349, Hydrogen M340, and Argon M418. On 2.33.0 the inspected pair is Carbon M437 and Hydrogen M462. If the default Hydrogen ID is absent on 2.33.0, the script checks the configured Hydrogen Medium entry against M462. Reject missing, disabled, or differently mapped models.
 
 The default prefers Carbon as planner and uses Hydrogen as executor. `--planner-models gemini-4-carbon` selects Carbon explicitly. Carbon → Hydrogen → Carbon was verified on an isolated file-edit/test task; it is not an efficiency benchmark. Cloning the larger shared Argon profile can exceed the verified native string capacity and is refused.
 
@@ -70,6 +71,10 @@ The owned Electron preload bridge selects the application's built-in HTTP RPC fa
 Equivalent duplicate Carbon config rows are backed up and normalized to one Orchestrator row. Rows with different capability settings are refused. Rollback restores only matching owned rows and labels.
 
 If the user authorizes restoring interrupted sessions, record the active roots and their children before quitting, snapshot databases again after a normal exit, and preserve their goals and permission settings. Resume only the specified sessions and avoid redoing completed side effects. If the user elects to resume manually, stop automatic continuation and keep the recovery manifest.
+
+### Optional checkpoint window
+
+Add `--checkpoint-limit 512000` to `inspect` and `prepare` with `--features orchestrator` or `--features pro` when the user asks for a larger context. Fresh installs without the option use the shipped limits. The plan records the chosen cap, and the patched app applies it to Carbon planning, Hydrogen execution, and new Carbon Direct requests. The effective cap remains subject to the model context window, output reservation, and explicit request configuration. Restore the plan to undo the change. The isolated 2.33.0 test read back 512,000 across Direct and every Orchestrator phase using a local mock Gateway. Upstream capacity for requests near that size remains unverified.
 
 ### Extend a previous patch
 

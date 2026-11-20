@@ -1,108 +1,78 @@
 # Antigravity Pro Unlock
 
-用标准 Agent Skill 启用 Antigravity 已随应用分发的本地能力：**Swarm、Boost、Teamwork、Orchestrator**。安装使用官方 [`skills` CLI](https://github.com/vercel-labs/skills)，支持 Codex、Claude Code、Cursor、OpenCode 等客户端。
+为 Mac 上的 Antigravity 启用本地功能。Gateway 用户可以在同一个模型菜单中选择 **Carbon Direct** 或 **Orchestrator**，并按需提高会话的 checkpoint 上限。当前技能版本为 **1.5.0**。
 
-版本：**1.4.0**。项目由 `enable-antigravity-swarm` 更名并独立维护。
+| 功能 | 用法 |
+| --- | --- |
+| Swarm | 用 `/swarm` 组织多个 agent，在看板查看任务和成员。 |
+| Boost、Teamwork | 在支持的版本中启用 `/boost` 和 `/teamwork`。 |
+| Carbon Direct | 整个会话使用 Carbon。 |
+| Orchestrator | Carbon 规划，Hydrogen 执行，再由 Carbon 复核。 |
+| 长上下文 | 用 `--checkpoint-limit` 设置 Carbon Direct 和 Orchestrator 各阶段的 checkpoint 上限。 |
 
-## 安装
+补丁针对应用内置功能，使用现有账号和 Gateway 模型配置。订阅权益、配额和上游模型限制仍由服务端决定。
 
-先列出技能：
+## 安装技能
 
-```sh
-npx skills add mapix/antigravity-pro-unlock --list
-```
-
-交互选择客户端和安装范围：
-
-```sh
-npx skills add mapix/antigravity-pro-unlock --skill antigravity-pro-unlock
-```
-
-全局安装到常用外部客户端：
+用 [skills CLI](https://github.com/vercel-labs/skills) 安装到 Codex、Claude Code、Cursor 和 OpenCode。CLI 需要 Node.js 22.20.0 或更高版本。
 
 ```sh
 npx skills add mapix/antigravity-pro-unlock --skill antigravity-pro-unlock -g -a codex -a claude-code -a cursor -a opencode -y
 ```
 
-单个客户端，例如 Codex：
+只装给 Codex 时，保留 `-a codex` 即可。省略客户端参数可交互选择。安装技能后，在 Antigravity 之外的客户端里提出请求，例如：
+
+> 用 antigravity-pro-unlock 检查我的 Antigravity，启用 Orchestrator 和 Carbon Direct，并把 checkpoint 上限设为 512,000 token。当前任务结束后再重启应用。
+
+## 兼容性与验证
+
+应用补丁支持 **Apple Silicon Mac**，需要 **Python 3.9+** 以及 macOS 自带的 `codesign`、`ditto`、`ps`、`open`。
+
+| Antigravity 版本 | 支持与验证范围 |
+| --- | --- |
+| 2.31.0 | Swarm 命令和看板。 |
+| 2.31.2 | Swarm 看板、Boost 和 Teamwork 命令。Gateway 下已验证 Carbon Direct 和 Orchestrator 实际交接。 |
+| 2.33.0 | 已确认 Swarm、Boost、Teamwork 功能开关及桌面双模型入口。隔离环境通过模拟网关验证了 Carbon Direct 和 Orchestrator 往返，并读回 512,000 token 的 checkpoint 上限。 |
+
+Carbon Direct 的独立入口适用于桌面模型菜单。2.33.0 在 Gateway 只配置 Hydrogen Medium 时，可以用该入口作为执行模型。实际网关对接近 512K token 请求的承载能力尚未测试。
+
+## 手动应用补丁
+
+从仓库根目录运行以下命令。先检查和准备补丁，等正在运行的 Antigravity 任务结束后再退出应用并应用。请从外部终端执行，退出 Antigravity 会中断它自己的 agent。
 
 ```sh
-npx skills add mapix/antigravity-pro-unlock --skill antigravity-pro-unlock -g -a codex -y
+SCRIPT=skills/antigravity-pro-unlock/scripts/antigravity_pro_unlock.py
+python3 "$SCRIPT" inspect --features pro
+python3 "$SCRIPT" prepare --features pro
+# 完全退出 Antigravity 后，把下面的路径替换为 prepare 返回的计划路径。
+python3 "$SCRIPT" apply --plan /returned/plan.json --restart
+python3 "$SCRIPT" verify --plan /returned/plan.json
 ```
 
-默认使用 CLI 的标准链接安装；需要文件副本时加 `--copy`。客户端列表和目录由官方 CLI 维护，见[官方客户端文档](https://github.com/vercel-labs/skills/blob/main/docs/agents.md)。CLI 当前要求 Node.js **22.20.0+**。
+`--features pro` 和 `--features all` 选择当前版本已适配的功能。也可以单选 `--features orchestrator`，它会同时提供 Carbon Direct。省略 `--features` 时默认选择 Swarm。
 
-本地仓库也可以直接安装：
+在 2.33.0 上将 Carbon Direct、Carbon 规划和 Hydrogen 执行的 checkpoint 上限设为 **512,000 token**：
 
 ```sh
-npx skills add ./antigravity-pro-unlock --skill antigravity-pro-unlock -g -a codex -a claude-code -a cursor -a opencode -y
+python3 "$SCRIPT" inspect --features orchestrator --checkpoint-limit 512000
+python3 "$SCRIPT" prepare --features orchestrator --checkpoint-limit 512000
 ```
 
-以上命令安装技能。应用补丁由使用该技能的 agent 按检查、备份、安装、验证流程执行。
+准备好的计划会记录上限，后续 `apply` 和 `verify` 使用同一份计划。首次安装时省略该参数会沿用应用默认值。实际可用空间还受模型上下文、输出预留和请求配置约束。
 
-## 使用
+## 备份、升级与回滚
 
-在其他 harness 中输入：
+准备阶段会备份应用、配置和会话数据库。新版启动时可能清理旧轨迹，脚本会从已校验的快照补回缺失数据库，保留已存在的文件。计划和备份默认存放在 `~/.local/share/antigravity-pro-unlock/`。
 
-> 使用 antigravity-pro-unlock 技能检查我的 Antigravity，并启用 Swarm、Boost 和 Teamwork。保留现有会话和 gateway 配置。
+升级 Antigravity 后，请针对新版本重新检查并准备补丁。若在同一版本的已有补丁上增加功能，准备时传入 `--base-plan /previous/verified/plan.json`，以检查旧补丁和备份是否匹配。旧版技能留下的计划可以继续用绝对路径引用。
 
-**从 Antigravity 之外执行补丁。** 完整退出目标应用会终止它自己的 agent；脚本会拒绝从 Antigravity 进程或 agent 环境执行修改。
-
-手动运行时，在仓库根目录执行：
+要回滚某次补丁，先退出 Antigravity，再使用那次的计划：
 
 ```sh
-python3 skills/antigravity-pro-unlock/scripts/antigravity_pro_unlock.py --version
-python3 skills/antigravity-pro-unlock/scripts/antigravity_pro_unlock.py inspect --features pro
-python3 skills/antigravity-pro-unlock/scripts/antigravity_pro_unlock.py prepare --features pro
-# 完整退出 Antigravity 后，使用 prepare 返回的计划路径：
-python3 skills/antigravity-pro-unlock/scripts/antigravity_pro_unlock.py apply --plan /returned/plan.json --restart
-python3 skills/antigravity-pro-unlock/scripts/antigravity_pro_unlock.py verify --plan /returned/plan.json
+python3 "$SCRIPT" restore --plan /returned/plan.json --restart
 ```
 
-若基于旧补丁增加能力，`prepare` 还需传入 `--base-plan /previous/verified/plan.json`。完整流程见 [SKILL.md](skills/antigravity-pro-unlock/SKILL.md)。
-
-## 支持范围
-
-| 能力 | 已验证 Antigravity 版本 | 验证范围 |
-| --- | --- | --- |
-| Swarm | 2.31.0、2.31.2 | 命令和原生 Board / Members / Graph |
-| Boost | 2.31.2 | 原生命令入口 |
-| Teamwork | 2.31.2 | 原生命令入口 |
-| Orchestrator | 2.31.2 / gateway | Carbon → Hydrogen → Carbon 实际交接 |
-| Carbon Direct | 2.31.2 / gateway 桌面 UI | 独立入口、固定 Carbon、按会话保存选择 |
-
-补丁运行于 **macOS Apple Silicon**，需要 **Python 3.9+** 和 macOS 自带的 `codesign`、`ditto`、`ps`、`open`。跨客户端安装遵循 [Agent Skills 标准](https://agentskills.io/specification)；应用兼容性按上表限制。
-
-“Pro Unlock” 是本项目对本地功能补丁的命名，不提供订阅或额度。账号认证、gateway、模型路由及管理员控制保留。Boost、Teamwork 的完整任务效果尚未进行基准测试。
-
-## 一键启用与模型配置
-
-`--features pro`（也可用 `all`）启用当前版本已适配的能力。未知版本仍会拒绝修改；这不是订阅、额度或所有实验功能的总开关。
-
-Orchestrator 默认选择已配置的 Carbon 与 Hydrogen，自动读取现有 gateway 模型映射，不需要新增模型或 API key。Carbon 的现有选择器条目变为 **Orchestrator (Carbon) (Gateway)**；Argon 仍是单模型。Hydrogen 的 profile 同时注册交回规划的工具，因此单独选择 Hydrogen 时也会有同模型的规划/执行工具。
-
-1.4.0 同时提供 **Gemini 4 Carbon (Direct) (Gateway)**。它使用原生 BYOM 会话身份及指向现有 Carbon 后端的请求配置，允许不同会话分别选择纯 Carbon 或 Orchestrator。虚拟菜单 ID 不会作为 API 模型名发给 gateway。已通过真实 UI 请求和旧 Orchestrator 会话的切换验证，Direct 请求均返回 `gemini-4-carbon`，不含规划／执行交接协议。
-
-桌面适配使用应用已有的 HTTP RPC 回退，保留原来的 TLS、CSRF、权限和 gateway 认证。补丁会校验并更新 ASAR 完整性、签名及数据库快照。Direct 菜单目前仅适配所列桌面版本，不代表 CLI 或远程控制界面已增加同名入口。
-
-两个模型的实际往返已在隔离目录完成文件创建、断言执行和 Carbon 复核。Argon 的共享 profile 较大，独立复制可能超过本版本的 native 字符串容量；脚本会保留原设置并拒绝该情况。
-
-## 备份与升级
-
-- 修改前保存完整应用、配置和会话数据库快照，检查原应用及 staging 指纹。
-- 应用启动可能裁剪已完成的子 agent 轨迹；新版在启动后只从已校验快照恢复缺失数据库，不覆盖新数据。已有摘要不代表完整轨迹仍存在。
-- 新计划位于 `~/.local/share/antigravity-pro-unlock/`；旧 `~/.local/share/antigravity-swarm-patch/` 计划可继续通过绝对路径使用。
-- 原会话和配置目录保持不变。升级后先检查当前版本，再为支持的版本准备新补丁；不要复用旧偏移或直接应用旧计划。
-- 修改原生二进制会使厂商签名失效；脚本对该应用进行本地签名。失败时使用计划中的源应用回滚。机制见 [mechanics.md](skills/antigravity-pro-unlock/references/mechanics.md)。
-
-更新或卸载技能使用官方 CLI：
-
-```sh
-npx skills update antigravity-pro-unlock -g
-npx skills remove antigravity-pro-unlock -g -y
-```
-
-卸载技能不会回滚已安装的应用补丁。应用回滚需按计划执行 `restore`。
+技能和应用补丁分别管理。更新或卸载技能可用 `npx skills update antigravity-pro-unlock -g` 或 `npx skills remove antigravity-pro-unlock -g -y`。补丁的详细流程和验证边界见[技能说明](skills/antigravity-pro-unlock/SKILL.md)及[实现说明](skills/antigravity-pro-unlock/references/mechanics.md)。
 
 ## 开发与打包
 
@@ -113,4 +83,4 @@ npm run test:install
 npm run package
 ```
 
-测试使用一次性应用 fixture 和项目安装目录。打包产物及 SHA-256 位于 `dist/`；包含技能及许可证，不包含应用、会话、配置、凭据或本机备份。
+测试使用一次性应用和安装目录。技能 ZIP 和 SHA-256 位于 `dist/`，用于单独分发技能及许可证。应用、会话、配置和凭据不打包。

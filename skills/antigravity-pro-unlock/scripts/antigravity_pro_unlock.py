@@ -20,20 +20,30 @@ from urllib.parse import urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 SKILL_NAME = "antigravity-pro-unlock"
-SKILL_VERSION = "1.4.0"
-SUPPORTED = {"2.31.0", "2.31.2"}
+SKILL_VERSION = "1.5.0"
+SUPPORTED = {"2.31.0", "2.31.2", "2.33.0"}
 FEATURE_FLAGS = {
     "swarm": ("enable-native-swarm", "enable-plugins", "enable-customization-kind-plugin"),
     "boost": ("enable-owl-slash-command",),
     "teamwork": ("enable-teamwork-subagent",),
     "orchestrator": (),
 }
-FEATURE_VERSIONS = {"swarm": {"2.31.0", "2.31.2"}, "boost": {"2.31.2"}, "teamwork": {"2.31.2"}, "orchestrator": {"2.31.2"}}
+FEATURE_VERSIONS = {"swarm": SUPPORTED, "boost": {"2.31.2", "2.33.0"},
+                    "teamwork": {"2.31.2", "2.33.0"}, "orchestrator": {"2.31.2", "2.33.0"}}
 SELECTED_FEATURES = ("swarm",)
 FLAGS = FEATURE_FLAGS["swarm"]
 ORCHESTRATOR = None
 ORCHESTRATOR_KEY = "plan-execute-config"
 ORCHESTRATOR_PROFILE_PREFIX = "antigravity-pro-unlock/orchestrator/"
+CHECKPOINT_KEY = "CASCADE_USE_EXPERIMENT_CHECKPOINTER"
+DEFAULT_CHECKPOINT_CAP = 256_000
+MAX_CHECKPOINT_CAP = 983_040
+MODEL_ENUMS = {
+    "2.31.2": {"gemini-4-carbon": "MODEL_PLACEHOLDER_M349", "gemini-4-hydrogen": "MODEL_PLACEHOLDER_M340",
+               "gemini-4-argon": "MODEL_PLACEHOLDER_M418"},
+    "2.33.0": {"gemini-4-carbon": "MODEL_PLACEHOLDER_M437", "gemini-4-hydrogen": "MODEL_PLACEHOLDER_M462",
+               "gemini-4-hydrogen-medium": "MODEL_PLACEHOLDER_M462"},
+}
 BRIDGE_NAME = "carbon_modes_bridge.js"
 BRIDGE_START = "// AG_PRO_CARBON_MODES_START"
 BRIDGE_END = "// AG_PRO_CARBON_MODES_END"
@@ -137,8 +147,14 @@ def require_closed(app):
 
 def runtime(app):
     prefix = str(binary_path(app))
-    matches = [(pid, cmd) for pid, (_, cmd) in processes().items()
+    table = processes()
+    matches = [(pid, cmd) for pid, (_, cmd) in table.items()
                if cmd.startswith(prefix) and re.search(r"--csrf_token(?:=|\s+)", cmd)]
+    desktop_prefix = str(Path(app) / "Contents/MacOS/") + "/"
+    desktop = [(pid, cmd) for pid, cmd in matches
+               if table.get(table[pid][0], (0, ""))[1].startswith(desktop_prefix)]
+    if desktop:
+        matches = desktop
     if len(matches) != 1:
         raise PatchError("Expected exactly one running language server for this app")
     pid, cmd = matches[0]
@@ -219,12 +235,15 @@ def model_catalog(app):
     return auth.get("authMode"), rows
 
 def resolve_orchestrator(app, planners="auto", execution="gemini-4-hydrogen"):
-    if identity(app)["version"] not in FEATURE_VERSIONS["orchestrator"]:
-        raise PatchError("Orchestrator is inspected only on 2.31.2")
+    expected = MODEL_ENUMS.get(identity(app)["version"])
+    if not expected:
+        raise PatchError("Orchestrator is not inspected for this release")
     mode, rows = model_catalog(app)
     if mode != "AUTH_MODE_ENTERPRISE_GATEWAY":
         raise PatchError("This Orchestrator patch is validated for gateway mode; inspect native account support first")
     by_id = {x["model_id"]: x for x in rows}
+    if execution == "gemini-4-hydrogen" and execution not in by_id and "gemini-4-hydrogen-medium" in expected:
+        execution = "gemini-4-hydrogen-medium"
     requested = next(([x] for x in ("gemini-4-carbon", "gemini-4-argon") if x in by_id), []) if planners == "auto" else list(dict.fromkeys(x.strip() for x in planners.split(",") if x.strip()))
     if not requested or execution not in by_id:
         raise PatchError("Orchestrator needs an available planner and execution model in the existing gateway catalog")
@@ -232,7 +251,6 @@ def resolve_orchestrator(app, planners="auto", execution="gemini-4-hydrogen"):
         raise PatchError("Requested planner is absent or disabled in the gateway catalog")
     if execution in requested:
         raise PatchError("Use different planning and execution models")
-    expected = {"gemini-4-argon": "MODEL_PLACEHOLDER_M418", "gemini-4-carbon": "MODEL_PLACEHOLDER_M349", "gemini-4-hydrogen": "MODEL_PLACEHOLDER_M340"}
     if any(expected.get(x) != by_id[x]["enum"] for x in requested + [execution]):
         raise PatchError("Uninspected model mapping; inspect/adapt rather than guessing enum slots")
     config = {"execution_model": by_id[execution]["enum"]}
@@ -279,21 +297,43 @@ def asar_entry(app, entry="dist/preload.js"):
         raise PatchError("Electron ASAR header integrity mismatch")
     return archive, data, header_size, tree, record, content
 
-def carbon_bridge_contract(app):
-    _, _, _, _, _, preload = asar_entry(app)
-    asset = Path(app) / "Contents/Resources/antigravity-pro-unlock" / BRIDGE_NAME
+def carbon_bridge_source(checkpoint_limit=None):
     expected = Path(__file__).with_name(BRIDGE_NAME)
     if not expected.is_file():
         raise PatchError("Skill is missing the Carbon mode bridge")
+    return expected.read_text() + (f"\n;globalThis.__AGProCarbonModes?.setCheckpointLimit({checkpoint_limit});\n"
+                                   if checkpoint_limit is not None else "")
+
+def carbon_bridge_contract(app, checkpoint_limit=None):
+    _, _, _, _, _, preload = asar_entry(app)
+    asset = Path(app) / "Contents/Resources/antigravity-pro-unlock" / BRIDGE_NAME
     marker = BRIDGE_START.encode() in preload and BRIDGE_END.encode() in preload
     if asset.exists() and not marker:
         raise PatchError("Unowned Carbon bridge asset; preserve and inspect")
-    inline = ("const source = " + json.dumps(expected.read_text()) + ";").encode()
-    return bool(marker and asset.is_file() and sha(asset) == sha(expected)
-                and f"carbon-modes {SKILL_VERSION}".encode() in preload and inline in preload
+    source = carbon_bridge_source(checkpoint_limit)
+    inline = ("const source = " + json.dumps(source) + ";").encode()
+    current = asset.is_file() and asset.read_bytes() == source.encode() and inline in preload
+    previous = (checkpoint_limit is None and b"carbon-modes 1.4.0" in preload
+                and asset.is_file()
+                and sha(asset) == "40fc58fe46898b1821c1afddfec143437c5d0d26676071bd2aabb9c5ddd1f6a0"
+                and ("const source = " + json.dumps(asset.read_text()) + ";").encode() in preload)
+    return bool(marker and (current or previous)
                 and b"injectCarbonModesEarly" in preload)
 
-def patch_carbon_bridge(app):
+def installed_checkpoint_limit(app):
+    asset = Path(app) / "Contents/Resources/antigravity-pro-unlock" / BRIDGE_NAME
+    if not asset.is_file():
+        return None
+    match = re.search(r"\n;globalThis\.__AGProCarbonModes\?\.setCheckpointLimit\(([0-9]+)\);\n\Z",
+                      asset.read_text())
+    if match is None:
+        return None
+    limit = int(match.group(1))
+    if not DEFAULT_CHECKPOINT_CAP < limit <= MAX_CHECKPOINT_CAP or not carbon_bridge_contract(app, limit):
+        raise PatchError("Existing Carbon checkpoint bridge failed verification")
+    return limit
+
+def patch_carbon_bridge(app, checkpoint_limit=None):
     archive, data, header_size, tree, record, preload = asar_entry(app)
     text = preload.decode("utf-8")
     if text.count("installCustomFlagOverridesSync();") != 1:
@@ -303,7 +343,8 @@ def patch_carbon_bridge(app):
         if len(pattern.findall(text)) != 1:
             raise PatchError("Ambiguous owned Carbon bridge block")
         text = pattern.sub("", text)
-    source_json = json.dumps(Path(__file__).with_name(BRIDGE_NAME).read_text())
+    source = carbon_bridge_source(checkpoint_limit)
+    source_json = json.dumps(source)
     snippet = f'''\n{BRIDGE_START}\n// carbon-modes {SKILL_VERSION}\ntry {{
   const source = {source_json};
   const injectCarbonModesEarly = () => {{
@@ -337,22 +378,26 @@ def patch_carbon_bridge(app):
     archive.write_bytes(rebuilt)
     asset_dir = Path(app) / "Contents/Resources/antigravity-pro-unlock"
     asset_dir.mkdir(exist_ok=True)
-    shutil.copy2(Path(__file__).with_name(BRIDGE_NAME), asset_dir / BRIDGE_NAME)
+    (asset_dir / BRIDGE_NAME).write_bytes(source.encode())
     info_path = Path(app) / "Contents/Info.plist"
     info = plistlib.loads(info_path.read_bytes())
     info["ElectronAsarIntegrity"]["Resources/app.asar"]["hash"] = hashlib.sha256(header).hexdigest()
     info_path.write_bytes(plistlib.dumps(info))
-    if not carbon_bridge_contract(app):
+    if not carbon_bridge_contract(app, checkpoint_limit):
         raise PatchError("Staged Carbon bridge integrity failed")
     return {"version": SKILL_VERSION, "asset_sha256": sha(asset_dir / BRIDGE_NAME),
             "preload_sha256": hashlib.sha256(changed).hexdigest(),
-            "native_model": 326, "backend_model": "gemini-4-carbon"}
+            "native_model": 326, "backend_model": "gemini-4-carbon",
+            "checkpoint_limit": checkpoint_limit}
 
 def orchestrator_defaults(obj, requested, write=False):
     profiles, models = obj.get("model_profiles"), obj.get("models")
     if not isinstance(profiles, dict) or not isinstance(models, dict):
         raise PatchError("Unsupported per-model defaults layout")
     enabled = True
+    limit = requested.get("checkpoint_limit")
+    if limit is not None and (type(limit) is not int or not DEFAULT_CHECKPOINT_CAP < limit <= MAX_CHECKPOINT_CAP):
+        raise PatchError("Invalid checkpoint limit in the Orchestrator plan")
     executor = dict(requested["execution"])
     executor["profile"] = requested.get("execution_profile", ORCHESTRATOR_PROFILE_PREFIX + "executor/" + executor["enum"])
     for row in requested["planners"] + [executor]:
@@ -373,11 +418,34 @@ def orchestrator_defaults(obj, requested, write=False):
             value = None
         if current != profile or value != requested["value"]:
             enabled = False
+        if limit is not None:
+            try:
+                checkpoint = json.loads(existing.get(CHECKPOINT_KEY, "{}"))
+            except (TypeError, ValueError) as exc:
+                raise PatchError("Unknown checkpoint override format") from exc
+            if not isinstance(checkpoint, dict):
+                raise PatchError("Unknown checkpoint override structure")
+            if checkpoint.get("max_token_limit") != limit:
+                enabled = False
         if write:
             profiles[profile] = dict(existing)
             profiles[profile][ORCHESTRATOR_KEY] = json.dumps(requested["value"], separators=(",", ":"))
+            if limit is not None:
+                checkpoint["max_token_limit"] = limit
+                profiles[profile][CHECKPOINT_KEY] = json.dumps(checkpoint, separators=(",", ":"))
             models[row["enum"]] = profile
     return enabled
+
+def compact_checkpoint_json(profile_maps):
+    for profile in profile_maps.values():
+        for key, value in profile.items():
+            if key == CHECKPOINT_KEY or key.startswith(CHECKPOINT_KEY + "/"):
+                try:
+                    decoded = json.loads(value)
+                except (TypeError, ValueError):
+                    continue
+                if isinstance(decoded, dict):
+                    profile[key] = json.dumps(decoded, separators=(",", ":"), ensure_ascii=False)
 
 def snapshot_conversation_data(data_dir, destination):
     source = Path(data_dir) / "conversations"
@@ -506,6 +574,8 @@ def defaults_contract(app, base_plan=None, orchestrator=None, inspect_only=False
     requested = orchestrator if orchestrator is not None else ORCHESTRATOR
     if requested and any(k.encode() not in data for k in (ORCHESTRATOR_KEY, "enter_plan_mode", "exit_plan_mode")):
         raise PatchError("Missing native plan/execute contract")
+    if requested and requested.get("checkpoint_limit") is not None and CHECKPOINT_KEY.encode() not in data:
+        raise PatchError("Missing native checkpoint override contract")
     found = []
     dec = json.JSONDecoder()
     for m in re.finditer(rb'\{\s*"base"\s*:', data):
@@ -529,6 +599,8 @@ def defaults_contract(app, base_plan=None, orchestrator=None, inspect_only=False
         patched["base"][key] = True
     orchestrator_before = orchestrator_defaults(obj, requested) if requested else None
     if requested:
+        if identity(app)["version"] == "2.33.0":
+            compact_checkpoint_json(patched["model_profiles"])
         orchestrator_defaults(patched, requested, write=True)
     new = json.dumps(patched, separators=(",", ":"), ensure_ascii=False).encode()
     already = all(obj["base"].get(key) is True for key in FLAGS) and (not requested or orchestrator_before)
@@ -605,7 +677,7 @@ def inspect(app):
             "flags_before": contract["flags_before"],
             "orchestrator": ORCHESTRATOR, "orchestrator_before": contract["orchestrator_before"],
             "already_patched": contract["already_patched"],
-            "carbon_direct_bridge": carbon_bridge_contract(app) if ORCHESTRATOR else None,
+            "carbon_direct_bridge": carbon_bridge_contract(app, ORCHESTRATOR.get("checkpoint_limit")) if ORCHESTRATOR else None,
             "live": live}
 
 def prepare(app, backup_root, base_plan=None):
@@ -629,7 +701,8 @@ def prepare(app, backup_root, base_plan=None):
         labels = model_label_patches(ORCHESTRATOR, labels_path, labels_config)
     else:
         labels = []
-    bridge_enabled = carbon_bridge_contract(app) if ORCHESTRATOR else True
+    checkpoint_limit = ORCHESTRATOR.get("checkpoint_limit") if ORCHESTRATOR else None
+    bridge_enabled = carbon_bridge_contract(app, checkpoint_limit) if ORCHESTRATOR else True
     if contract["already_patched"] and bridge_enabled and not normalized and all(x["before"] == x["after"] for x in labels):
         return {"action": "noop", "reason": "All required defaults already enabled",
                 "next": "Run verify, then panel if necessary"}
@@ -669,7 +742,7 @@ def prepare(app, backup_root, base_plan=None):
         f.flush()
         os.fsync(f.fileno())
     (folder / "defaults-original.bin").write_bytes(contract["original"])
-    bridge = patch_carbon_bridge(staged) if ORCHESTRATOR else None
+    bridge = patch_carbon_bridge(staged, checkpoint_limit) if ORCHESTRATOR else None
     sign_debug_app(staged)
     if identity(staged) != info:
         raise PatchError("Application identity changed unexpectedly")
@@ -813,7 +886,7 @@ def verify(app, plan_path=None):
             for expected in orchestrator["planners"]:
                 if by_id[expected["model_id"]]["label"] != expected["orchestrator_label"]:
                     raise PatchError("Orchestrator UI model label is not active")
-            if plan.get("carbon_direct_bridge") and not carbon_bridge_contract(app):
+            if plan.get("carbon_direct_bridge") and not carbon_bridge_contract(app, orchestrator.get("checkpoint_limit")):
                 raise PatchError("Carbon Direct bridge is missing or changed")
         baseline = plan.get("baseline") or {}
         if plan.get("baseline") is not None and baseline.get("conversation_id_source") != "conversation_files":
@@ -831,6 +904,8 @@ def verify(app, plan_path=None):
         result["orchestrator"] = {"planners": [x["model_id"] for x in orchestrator["planners"]],
                                   "execution": orchestrator["execution"]["model_id"],
                                   "defaults_verified": True, "live_handoff_observation_required": True}
+        if "checkpoint_limit" in orchestrator:
+            result["orchestrator"]["checkpoint_limit"] = orchestrator["checkpoint_limit"]
         if plan_path and plan.get("carbon_direct_bridge"):
             result["carbon_direct"] = {"bridge_verified": True, "native_model": 326,
                                       "backend_model": "gemini-4-carbon",
@@ -1021,6 +1096,7 @@ def main():
     parser.add_argument("--base-plan", type=Path, help="verified prior plan when extending compact patched defaults")
     parser.add_argument("--planner-models", default="auto", help="Orchestrator planners: auto, or comma-separated gateway model IDs")
     parser.add_argument("--execution-model", default="gemini-4-hydrogen", help="Existing gateway execution model ID")
+    parser.add_argument("--checkpoint-limit", type=int, help="Opt in to a larger checkpoint window for the Carbon/Hydrogen pair (256001–983040 tokens)")
     args = parser.parse_args()
     app = args.app.expanduser().absolute()
     global FLAGS, SELECTED_FEATURES, ORCHESTRATOR
@@ -1040,6 +1116,8 @@ def main():
             if not SELECTED_FEATURES:
                 raise PatchError("No inspected features for this release")
             FLAGS = tuple(dict.fromkeys(k for f in SELECTED_FEATURES for k in FEATURE_FLAGS[f]))
+        if args.checkpoint_limit is not None and not DEFAULT_CHECKPOINT_CAP < args.checkpoint_limit <= MAX_CHECKPOINT_CAP:
+            raise PatchError("--checkpoint-limit must be between 256001 and 983040")
         ORCHESTRATOR = None
         if args.plan and args.action in ("apply", "verify", "restore"):
             _, active_plan = load_plan(args.plan)
@@ -1047,6 +1125,19 @@ def main():
             FLAGS = tuple(active_plan.get("flags", FLAGS))
         if "orchestrator" in SELECTED_FEATURES and args.action in ("inspect", "prepare"):
             ORCHESTRATOR = resolve_orchestrator(app, args.planner_models, args.execution_model)
+            if args.checkpoint_limit is None:
+                previous_limit = installed_checkpoint_limit(app)
+                if previous_limit is not None:
+                    ORCHESTRATOR["checkpoint_limit"] = previous_limit
+        if args.checkpoint_limit is not None:
+            if args.action not in ("inspect", "prepare") or not ORCHESTRATOR:
+                raise PatchError("--checkpoint-limit requires inspect/prepare with the orchestrator feature")
+            if ([x["model_id"] for x in ORCHESTRATOR["planners"]] != ["gemini-4-carbon"]
+                    or ORCHESTRATOR["execution"]["model_id"] not in ("gemini-4-hydrogen", "gemini-4-hydrogen-medium")):
+                raise PatchError("--checkpoint-limit requires Carbon planning and Hydrogen execution")
+            if identity(app)["version"] == "2.33.0" and args.checkpoint_limit < 512_000:
+                raise PatchError("--checkpoint-limit must be at least 512000 in 2.33.0")
+            ORCHESTRATOR["checkpoint_limit"] = args.checkpoint_limit
         if args.action == "inspect":
             result = inspect(app)
         elif args.action == "prepare":

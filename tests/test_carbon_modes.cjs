@@ -31,6 +31,20 @@ test('request augmentation is per request and preserves other models and explici
     customModelInfoOverride: { modelName: 'user-custom-model' } } } };
   assert.equal(bridge.requestJson('SendUserCascadeMessage', supplied), supplied);
 });
+test('2.33 catalog and opt-in checkpoint cover Carbon Direct while retaining explicit limits', () => {
+  const catalog = source();
+  catalog.clientModelConfigs[0].modelOrAlias.model = 'MODEL_PLACEHOLDER_M437';
+  assert.equal(bridge.catalogJson(catalog, 437).data.clientModelConfigs[0].modelOrAlias.model, 326);
+  const method = 'SendUserCascadeMessage';
+  const direct = { cascadeConfig: { plannerConfig: { planModel: 326 } } };
+  assert.equal(bridge.requestJson(method, direct).cascadeConfig.checkpointConfig, undefined);
+  assert.equal(bridge.requestJson(method, direct, 840000).cascadeConfig.checkpointConfig.maxTokenLimit, 840000);
+  direct.cascadeConfig.checkpointConfig = { maxTokenLimit: 600000 };
+  assert.equal(bridge.requestJson(method, direct, 840000).cascadeConfig.checkpointConfig.maxTokenLimit, 600000);
+  const raw = f(5, 2, f(1, 2, f(1, 0, 326)));
+  const config = parse(parse(bridge.requestWire(method, raw, 840000))[0].value);
+  assert.equal(parse(config.find(field => field.number === 2).value)[0].value, 840000n);
+});
 test('binary request retains unknown fields while adding only the native ModelInfo override', () => {
   const planner = join([f(1, 0, 326), f(99, 2, 'unknown-planner')]);
   const config = join([f(1, 2, planner), f(77, 0, 123)]);

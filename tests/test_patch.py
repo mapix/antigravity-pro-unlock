@@ -212,6 +212,7 @@ class CarbonArchiveTests(unittest.TestCase):
             (app / "Contents/Info.plist").write_bytes(plistlib.dumps(info))
             unlock.patch_carbon_bridge(app)
             self.assertTrue(unlock.carbon_bridge_contract(app))
+            self.assertIsNone(unlock.installed_checkpoint_limit(app))
             self.assertEqual(unlock.asar_entry(app, "dist/other.js")[-1], other)
             patched = unlock.asar_entry(app)
             self.assertTrue(patched[1][8 + patched[2]:].startswith(preload + other))
@@ -356,6 +357,20 @@ class OrchestratorTests(unittest.TestCase):
             result = unlock.resolve_orchestrator(self.app)
         self.assertEqual(result["value"], {"execution_model": "MODEL_PLACEHOLDER_M340"})
         self.assertEqual(result["planners"][0]["model_id"], "gemini-4-argon")
+
+    def test_233_uses_configured_hydrogen_medium_when_base_id_is_missing(self):
+        rows = [
+            {"model_id": "gemini-4-carbon", "enum": "MODEL_PLACEHOLDER_M437", "label": "Carbon"},
+            {"model_id": "gemini-4-hydrogen-medium", "enum": "MODEL_PLACEHOLDER_M462", "label": "Hydrogen Medium"},
+        ]
+        with patch.object(unlock, "identity", return_value={"version": "2.33.0"}), patch.object(
+                unlock, "model_catalog", return_value=("AUTH_MODE_ENTERPRISE_GATEWAY", rows)):
+            result = unlock.resolve_orchestrator(self.app)
+            self.assertEqual(result["execution"]["model_id"], "gemini-4-hydrogen-medium")
+            self.assertEqual(result["value"], {"execution_model": "MODEL_PLACEHOLDER_M462"})
+            rows[1]["enum"] = "MODEL_PLACEHOLDER_M999"
+            with self.assertRaisesRegex(unlock.PatchError, "Uninspected model mapping"):
+                unlock.resolve_orchestrator(self.app)
 
     def test_missing_execution_mapping_refused(self):
         with patch.object(unlock, "model_catalog", return_value=("AUTH_MODE_ENTERPRISE_GATEWAY", self.catalog()[1:])), self.assertRaisesRegex(unlock.PatchError, "available planner"):

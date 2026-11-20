@@ -1,17 +1,19 @@
-/* Owned Antigravity 2.31.2 selector adapter. No backend model alias or credentials. */
+/* Antigravity desktop selector adapter for inspected releases. */
 (function (root, factory) {
   const api = factory();
   if (typeof window === 'object' && window.document) api.install(root);
   else if (typeof module === 'object') module.exports = api;
 })(globalThis, function () {
   'use strict';
-  const VERSION = '1.4.0';
+  const VERSION = '1.5.0';
   const SERVICE = '/exa.language_server_pb.LanguageServerService/';
   const DIRECT_ID = 'antigravity-pro-unlock-carbon-direct';
   const DIRECT_LABEL = 'Gemini 4 Carbon (Direct) (Gateway)';
   const SOURCE_LABEL = 'Orchestrator (Carbon) (Gateway)';
   const BYOM = 326;
   const CARBON = 349;
+  const CARBON_233 = 437;
+  const CARBON_BY_VERSION = Object.freeze({ '2.31.2': CARBON, '2.33.0': CARBON_233 });
   const MODEL_INFO = Object.freeze({
     modelId: BYOM, modelName: 'gemini-4-carbon', chatModelName: 'gemini-4-carbon',
     apiProvider: 24, modelProvider: 4, maxTokens: 1048576, maxOutputTokens: 65536,
@@ -34,9 +36,9 @@
     const match = /^MODEL_PLACEHOLDER_M(\d+)$/.exec(value || '');
     return match ? Number(match[1]) : undefined;
   }
-  function catalogJson(data) {
+  function catalogJson(data, carbon = CARBON) {
     const source = data.clientModelConfigs?.find(row => row.modelId === 'gemini-4-carbon'
-      && row.label === SOURCE_LABEL && enumValue(row.modelOrAlias?.model) === CARBON && !row.disabled);
+      && row.label === SOURCE_LABEL && enumValue(row.modelOrAlias?.model) === carbon && !row.disabled);
     if (!source) return { data, registered: false };
     if (data.clientModelConfigs.some(row => row.modelId === DIRECT_ID)) return { data, registered: true };
     const next = clone(data);
@@ -55,17 +57,20 @@
       groups: [{ groupName: 'Enterprise Models', modelLabels: [DIRECT_LABEL, SOURCE_LABEL] }] });
     return { data: next, registered: true };
   }
-  function requestJson(method, data) {
+  function requestJson(method, data, checkpointLimit) {
     const field = CONFIG_FIELDS[method]?.[0];
     const planner = field && data[field]?.plannerConfig;
     if (!planner || enumValue(planner.planModel) !== BYOM || planner.customModelInfoOverride != null) return data;
     const next = clone(data);
     next[field].plannerConfig.customModelInfoOverride = clone(MODEL_INFO);
+    if (checkpointLimit && next[field].checkpointConfig?.maxTokenLimit == null) {
+      (next[field].checkpointConfig ||= {}).maxTokenLimit = checkpointLimit;
+    }
     return next;
   }
-  function statusJson(data) {
+  function statusJson(data, carbon = CARBON) {
     if (!data.userStatus?.cascadeModelConfigData) return { data, registered: false };
-    const result = catalogJson(data.userStatus.cascadeModelConfigData);
+    const result = catalogJson(data.userStatus.cascadeModelConfigData, carbon);
     return { data: result.registered ? { ...data, userStatus: { ...data.userStatus,
       cascadeModelConfigData: result.data } } : data, registered: result.registered };
   }
@@ -128,7 +133,7 @@
       wireField(13, 0, MODEL_INFO.maxOutputTokens), wireField(20, 2, DIRECT_LABEL),
       wireField(24, 0, MODEL_INFO.modelProvider)]);
   }
-  function requestWire(method, bytes) {
+  function requestWire(method, bytes, checkpointLimit) {
     const number = CONFIG_FIELDS[method]?.[1];
     if (!number) return bytes;
     const top = parseWire(bytes), configBytes = fieldValue(top, number);
@@ -138,10 +143,19 @@
     const planner = parseWire(plannerBytes);
     if (Number(fieldValue(planner, 1)) !== BYOM || planner.some(field => field.number === 27)) return bytes;
     const nextPlanner = concat([...planner.map(field => field.raw), wireField(27, 2, modelInfoWire())]);
-    const nextConfig = replaceWire(config, new Map([[1, wireField(1, 2, nextPlanner)]]));
+    const changes = new Map([[1, wireField(1, 2, nextPlanner)]]);
+    if (checkpointLimit) {
+      const checkpoint = parseWire(fieldValue(config, 2) || new Uint8Array());
+      if (!checkpoint.some(field => field.number === 5)) {
+        changes.set(2, wireField(2, 2, concat([
+          ...checkpoint.map(field => field.raw), wireField(5, 0, checkpointLimit),
+        ])));
+      }
+    }
+    const nextConfig = replaceWire(config, changes);
     return replaceWire(top, new Map([[number, wireField(number, 2, nextConfig)]]));
   }
-  function catalogWire(bytes) {
+  function catalogWire(bytes, carbon = CARBON) {
     const top = parseWire(bytes);
     const text = (fields, number) => { const value = fieldValue(fields, number); return value ? decoder.decode(value) : ''; };
     let source, existing = false;
@@ -150,7 +164,7 @@
       if (id === DIRECT_ID) existing = true;
       if (id === 'gemini-4-carbon' && text(row, 1) === SOURCE_LABEL && !fieldValue(row, 4)) {
         const alias = fieldValue(row, 2);
-        if (alias && Number(fieldValue(parseWire(alias), 1)) === CARBON) source = field;
+        if (alias && Number(fieldValue(parseWire(alias), 1)) === carbon) source = field;
       }
     }
     if (!source) return { bytes, registered: false };
@@ -181,12 +195,12 @@
       wireField(2, 2, concat([wireField(1, 2, 'Enterprise Models'), wireField(2, 2, DIRECT_LABEL)]))])));
     return { bytes: concat(output), registered: true };
   }
-  function statusWire(bytes) {
+  function statusWire(bytes, carbon = CARBON) {
     const top = parseWire(bytes), statusBytes = fieldValue(top, 1);
     if (!(statusBytes instanceof Uint8Array)) return { bytes, registered: false };
     const status = parseWire(statusBytes), catalogBytes = fieldValue(status, 33);
     if (!(catalogBytes instanceof Uint8Array)) return { bytes, registered: false };
-    const result = catalogWire(catalogBytes);
+    const result = catalogWire(catalogBytes, carbon);
     if (!result.registered) return { bytes, registered: false };
     const changed = replaceWire(status, new Map([[33, wireField(33, 2, result.bytes)]]));
     return { bytes: replaceWire(top, new Map([[1, wireField(1, 2, changed)]])), registered: true };
@@ -220,7 +234,7 @@
   function install(root) {
     if (root.__AGProCarbonModes?.version === VERSION) return root.__AGProCarbonModes;
     const config = root.__APP_CONFIG__;
-    if (!root.document || root.top !== root.self || (config && (config.appVersion !== '2.31.2'
+    if (!root.document || root.top !== root.self || (config && (!Object.hasOwn(CARBON_BY_VERSION, config.appVersion)
       || config.productName !== 'antigravity'))
       || !['127.0.0.1', 'localhost'].includes(root.location?.hostname)) return;
     // The Hub's built-in HTTP transport uses the same TLS origin and CSRF rules.
@@ -228,7 +242,7 @@
     const route = new URL(root.location.href);
     route.searchParams.set('useWebSocket', 'false');
     root.history.replaceState(root.history.state, '', route.href);
-    const original = root.fetch.bind(root); let registered = false;
+    const original = root.fetch.bind(root); let registered = false, checkpointLimit;
     root.fetch = async function (input, init) {
       let request, method;
       try {
@@ -239,20 +253,22 @@
         if (registered && CONFIG_FIELDS[method] && request.method === 'POST') {
           const type = request.headers.get('content-type') || '';
           const raw = new Uint8Array(await request.clone().arrayBuffer());
-          const body = mapBody(type, raw, data => requestJson(method, data), bytes => requestWire(method, bytes));
+          const body = mapBody(type, raw, data => requestJson(method, data, checkpointLimit),
+            bytes => requestWire(method, bytes, checkpointLimit));
           if (body !== raw) request = new Request(request, { body });
         }
       } catch (_) { return original(input, init); }
       const response = await original(request);
+      const carbon = CARBON_BY_VERSION[root.__APP_CONFIG__?.appVersion];
       if (!['GetCascadeModelConfigData', 'GetUserStatus'].includes(method) || !response.ok
-        || root.__APP_CONFIG__?.appVersion !== '2.31.2') return response;
+        || typeof carbon !== 'number') return response;
       try {
         const type = response.headers.get('content-type') || '', raw = new Uint8Array(await response.clone().arrayBuffer());
         const body = mapBody(type, raw, data => {
-          const result = (method === 'GetUserStatus' ? statusJson : catalogJson)(data);
+          const result = (method === 'GetUserStatus' ? statusJson : catalogJson)(data, carbon);
           registered ||= result.registered; return result.data;
         }, bytes => {
-          const result = (method === 'GetUserStatus' ? statusWire : catalogWire)(bytes);
+          const result = (method === 'GetUserStatus' ? statusWire : catalogWire)(bytes, carbon);
           registered ||= result.registered; return result.bytes;
         });
         if (body === raw) return response;
@@ -261,7 +277,10 @@
       } catch (_) { return response; }
     };
     return (root.__AGProCarbonModes = { version: VERSION, directId: DIRECT_ID,
-      directLabel: DIRECT_LABEL, sourceLabel: SOURCE_LABEL, isReady: () => registered });
+      directLabel: DIRECT_LABEL, sourceLabel: SOURCE_LABEL, isReady: () => registered,
+      setCheckpointLimit(limit) {
+        if (Number.isInteger(limit) && limit > 256000 && limit <= 983040) checkpointLimit = limit;
+      } });
   }
   return { VERSION, DIRECT_ID, DIRECT_LABEL, MODEL_INFO, CONFIG_FIELDS, enumValue,
     catalogJson, statusJson, requestJson, requestWire, catalogWire, statusWire, mapFrames, mapBody,
